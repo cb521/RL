@@ -73,6 +73,11 @@ and a separate 7B LoRA diagnostic on an RTX 6000D are recorded in
 dependencies into one node-local environment because the example runs every
 actor on one GPU and does not require optional MoE kernels.
 
+The observed launcher defaults to `SWANLAB_MODE=local`. In that mode the
+preparation helper also installs SwanLab's dashboard extra at the same version
+already resolved by NeMo RL, so no SwanLab cloud account is required. Other
+launchers do not install the optional local dashboard.
+
 ## Use a private corpus
 
 Replace `resources_servers/ai_search/data/corpus.jsonl`. Each line is one

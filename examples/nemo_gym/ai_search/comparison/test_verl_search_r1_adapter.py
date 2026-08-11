@@ -4,6 +4,7 @@
 """Tests for the strict Search-R1 rollout built on current veRL Agent Loop."""
 
 import asyncio
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -115,6 +116,32 @@ def test_search_then_answer_preserves_logprobs_and_observation_mask() -> None:
     assert params["logprobs"] is True
     assert params["stop"] == ["</search>", "</answer>"]
     assert params["include_stop_str_in_output"] is True
+
+
+def test_common_trace_links_generation_and_retrieval(
+    tmp_path, monkeypatch
+) -> None:
+    trace_path = tmp_path / "trajectory-spans.jsonl"
+    monkeypatch.setenv("AI_SEARCH_TRACE_PATH", str(trace_path))
+    monkeypatch.setenv("AI_SEARCH_TRACE_SAMPLE_RATE", "1")
+    agent = _Agent(
+        [_output("<search>capital France</search>"), _output("<answer>Answer</answer>")]
+    )
+    _run(agent)
+
+    events = [
+        json.loads(line)
+        for line in trace_path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert [event["operation"] for event in events] == [
+        "model_generation",
+        "retrieval",
+        "model_generation",
+    ]
+    assert {event["component"] for event in events} == {"current_verl"}
+    assert len({event["trace_id"] for event in events}) == 1
+    retrieval = events[1]
+    assert retrieval["attributes"]["provider_batch_id"] == agent.searches[0][1]
 
 
 def test_four_searches_get_one_final_search_disabled_generation() -> None:

@@ -4,6 +4,7 @@
 """Tests for the strict Search-R1 rollout built on slime's hook contract."""
 
 import asyncio
+import json
 from contextlib import contextmanager
 from enum import Enum
 from pathlib import Path
@@ -117,9 +118,15 @@ def _runtime(responses, calls):
             }
         return responses.pop(0)
 
+    def bind_trace(sample):
+        if not hasattr(sample, "trace"):
+            sample.trace = {"trace_id": "slime-test-trace", "events": []}
+        return SimpleNamespace(trace_id=sample.trace["trace_id"])
+
     return SimpleNamespace(
         GenerateState=lambda args: SimpleNamespace(tokenizer=_Tokenizer()),
         Sample=_Sample,
+        bind_trace=bind_trace,
         post=post,
         trace_span=_trace_span,
         build_sglang_meta_trace_attrs=lambda meta: {"finish": meta["finish_reason"]["type"]},
@@ -170,6 +177,45 @@ def test_search_then_answer_preserves_tokens_logprobs_and_observation_mask(
         "return_scores": True,
     }
     assert search_calls[0][3]["X-NeMo-Search-Batch-ID"]
+
+
+def test_common_trace_links_generation_and_retrieval(
+    tmp_path, monkeypatch
+) -> None:
+    trace_path = tmp_path / "trajectory-spans.jsonl"
+    monkeypatch.setenv("AI_SEARCH_TRACE_PATH", str(trace_path))
+    monkeypatch.setenv("AI_SEARCH_TRACE_SAMPLE_RATE", "1")
+    calls = []
+    responses = [
+        _output("<search>capital France</search>"),
+        _output("<answer>Answer</answer>"),
+    ]
+    monkeypatch.setattr(adapter, "_runtime", lambda: _runtime(responses, calls))
+    monkeypatch.setattr(adapter, "_SEARCH_SEMAPHORE", None)
+    monkeypatch.setattr(adapter, "_SEARCH_SEMAPHORE_LOOP", None)
+    sample = asyncio.run(
+        adapter.generate(
+            _args(), _Sample(), {"temperature": 1.0, "top_p": 1.0}
+        )
+    )
+
+    events = [
+        json.loads(line)
+        for line in trace_path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert [event["operation"] for event in events] == [
+        "model_generation",
+        "retrieval",
+        "model_generation",
+    ]
+    assert {event["component"] for event in events} == {"slime"}
+    assert {event["trace_id"] for event in events} == {
+        sample.metadata["observability_trace_id"]
+    }
+    retrieval_call = next(call for call in calls if call[0].endswith("/retrieve"))
+    assert events[1]["attributes"]["provider_batch_id"] == (
+        retrieval_call[3]["X-NeMo-Search-Batch-ID"]
+    )
 
 
 def test_four_searches_get_one_final_search_disabled_generation(monkeypatch) -> None:

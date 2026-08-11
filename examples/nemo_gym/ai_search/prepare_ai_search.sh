@@ -103,6 +103,24 @@ if [[ "${AI_SEARCH_PREPARE_TRAINING_ENV:-1}" == "1" ]]; then
       "cuda-python" \
       "flashinfer-python==0.6.13"
   fi
+
+  # SwanLab's local mode is intentionally an optional extra. Install its
+  # dashboard dependencies only for local observed runs, and keep the extra on
+  # the same SwanLab version that the NeMo RL environment already resolved.
+  if [[ "${SWANLAB_MODE:-}" == "local" ]] && \
+    ! "${UV_PROJECT_ENVIRONMENT}/bin/python" -c 'import swanboard' \
+      >/dev/null 2>&1; then
+    AI_SEARCH_SWANLAB_VERSION="$(
+      "${UV_PROJECT_ENVIRONMENT}/bin/python" -c \
+        'from importlib.metadata import version; print(version("swanlab"))'
+    )"
+    "${UV_BIN}" pip install \
+      --python "${UV_PROJECT_ENVIRONMENT}/bin/python" \
+      "swanlab[dashboard]==${AI_SEARCH_SWANLAB_VERSION}"
+  fi
+  if [[ "${SWANLAB_MODE:-}" == "local" ]]; then
+    "${UV_PROJECT_ENVIRONMENT}/bin/python" -c 'import swanboard'
+  fi
 fi
 
 AI_SEARCH_SERVER_VENV="${NEMO_GYM_VENV_DIR}/resources_servers/ai_search/.venv"

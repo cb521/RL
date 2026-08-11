@@ -74,7 +74,9 @@ questions and must not be collapsed into one profiler run:
 
 1. SwanLab or W&B records step-level quality, throughput, GPU utilization, and
    trainer supply. The observed recipe enables SwanLab and TensorBoard; setting
-   `SWANLAB_MODE=local` needs no cloud account.
+   `SWANLAB_MODE=local` needs no cloud account. The observed launcher installs
+   SwanLab's optional dashboard extra at the same version as the environment's
+   existing SwanLab package.
 2. Nsight Systems records CUDA, NCCL, and NVTX activity for a short steady-state
    window. It is run separately because profiler overhead would bias the clean
    end-to-end result.
@@ -321,6 +323,14 @@ measured update window, emits TensorBoard and raw rollout artifacts, and uses
 the common evaluation hook for campaign checkpoints. Set
 `SEARCH_R1_PRINT_COMMAND=1` on either launcher to validate and print the fully
 resolved command without starting Ray or allocating model memory.
+
+Both launchers also write sampled common JSONL spans for model generations and
+retrieval calls. `performance` samples trajectories deterministically at 10%
+by default, while `smoke` records all trajectories and `campaign` records 1%.
+Set `SEARCH_R1_TRACE_SAMPLE_RATE` to override the rate. The retrieval span and
+the E5 service span carry the same provider batch ID, so queue, encoding,
+Faiss, document fetch, and network time can be joined without relying on wall
+clock proximity.
 
 The frozen slime revision has no native SwanLab logger. Preserve its raw
 TensorBoard events as the source of truth, then mirror them to a local SwanLab

@@ -30,6 +30,7 @@ case "${run_mode}" in
     test_freq=-1
     val_before_train=false
     logger="['console']"
+    default_trace_sample_rate=1.0
     ;;
   performance)
     prompts_per_step=8
@@ -40,6 +41,7 @@ case "${run_mode}" in
     test_freq=-1
     val_before_train=false
     logger="['console','swanlab','tensorboard']"
+    default_trace_sample_rate=0.1
     ;;
   campaign)
     prompts_per_step=512
@@ -50,12 +52,14 @@ case "${run_mode}" in
     test_freq=50
     val_before_train=true
     logger="['console','swanlab','tensorboard']"
+    default_trace_sample_rate=0.01
     ;;
   *)
     echo "SEARCH_R1_RUN_MODE must be smoke, performance, or campaign, not ${run_mode}." >&2
     exit 1
     ;;
 esac
+trace_sample_rate="${SEARCH_R1_TRACE_SAMPLE_RATE:-${default_trace_sample_rate}}"
 
 if [[ "$(git -C "${verl_root}" rev-parse HEAD)" != "${expected_verl_commit}" ]]; then
   echo "Current veRL checkout moved from ${expected_verl_commit}." >&2
@@ -90,6 +94,10 @@ if [[ "${seed}" == *[!0-9]* || -z "${seed}" ]]; then
   echo "SEARCH_R1_SEED must be a non-negative integer." >&2
   exit 1
 fi
+if [[ -e "${output_dir}/manifest.txt" ]]; then
+  echo "SEARCH_R1_OUTPUT_DIR already contains a run manifest: ${output_dir}" >&2
+  exit 1
+fi
 
 mkdir -p \
   "${output_dir}/checkpoints" \
@@ -100,6 +108,8 @@ mkdir -p \
 
 export PYTHONPATH="${comparison_dir}:${verl_root}${PYTHONPATH:+:${PYTHONPATH}}"
 export SEARCH_R1_RETRIEVER_URL="${retriever_url}"
+export AI_SEARCH_TRACE_PATH="${output_dir}/trajectory-spans.jsonl"
+export AI_SEARCH_TRACE_SAMPLE_RATE="${trace_sample_rate}"
 export SWANLAB_MODE=local
 export SWANLAB_LOG_DIR="${output_dir}/swanlab"
 export TENSORBOARD_DIR="${output_dir}/tensorboard"
@@ -121,6 +131,8 @@ export PYTHONUNBUFFERED=1
   printf 'rollouts_per_prompt=5\n'
   printf 'trajectories_per_step=%s\n' "$((prompts_per_step * 5))"
   printf 'total_steps=%s\n' "${total_steps}"
+  printf 'trace_path=%s\n' "${AI_SEARCH_TRACE_PATH}"
+  printf 'trace_sample_rate=%s\n' "${AI_SEARCH_TRACE_SAMPLE_RATE}"
   printf 'formal_parity_result=%s\n' "$([[ "${run_mode}" == campaign ]] && echo candidate || echo false)"
 } > "${output_dir}/manifest.txt"
 

@@ -44,6 +44,10 @@ def test_current_verl_launcher_freezes_aligned_protocol() -> None:
         "trainer.total_training_steps=${total_steps}",
         "SWANLAB_MODE=local",
         "['console','swanlab','tensorboard']",
+        "default_trace_sample_rate=0.1",
+        'export AI_SEARCH_TRACE_PATH="${output_dir}/trajectory-spans.jsonl"',
+        "printf 'trace_sample_rate=%s\\n' \"${AI_SEARCH_TRACE_SAMPLE_RATE}\"",
+        "SEARCH_R1_OUTPUT_DIR already contains a run manifest",
     )
     for fragment in required_fragments:
         assert fragment in source
@@ -74,6 +78,10 @@ def test_slime_launcher_freezes_aligned_protocol() -> None:
         "--save-debug-rollout-data",
         "--use-tensorboard",
         'printf \'swanlab_source=post-run-tensorboard-conversion\\n\'',
+        "default_trace_sample_rate=0.1",
+        'export AI_SEARCH_TRACE_PATH="${output_dir}/trajectory-spans.jsonl"',
+        '\"AI_SEARCH_TRACE_SAMPLE_RATE\":\"%s\"',
+        "SEARCH_R1_OUTPUT_DIR already contains a run manifest",
     )
     for fragment in required_fragments:
         assert fragment in source

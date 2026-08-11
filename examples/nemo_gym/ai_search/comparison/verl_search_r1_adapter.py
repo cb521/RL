@@ -15,6 +15,8 @@ from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any
 
+from framework_observability import trace_span
+
 
 MAX_EXECUTABLE_TURNS = 4
 MAX_ACTION_TOKENS = 500
@@ -209,15 +211,26 @@ async def _generate_turn(
     context_ids: list[int],
     sampling_params: dict[str, Any],
     priority: int,
+    turn: int,
 ) -> tuple[Any, list[int], list[float], str, float]:
     started = time.perf_counter()
-    output = await agent.server_manager.generate(
-        request_id=request_id,
-        prompt_ids=context_ids[-MAX_RESPONSE_TOKENS:],
-        sampling_params=dict(sampling_params),
-        priority=priority,
-    )
-    elapsed = time.perf_counter() - started
+    with trace_span(
+        trace_id=request_id,
+        component="current_verl",
+        operation="model_generation",
+        attributes={"turn": turn, "max_new_tokens": MAX_ACTION_TOKENS},
+    ) as span:
+        output = await agent.server_manager.generate(
+            request_id=request_id,
+            prompt_ids=context_ids[-MAX_RESPONSE_TOKENS:],
+            sampling_params=dict(sampling_params),
+            priority=priority,
+        )
+        elapsed = time.perf_counter() - started
+        span.set_attributes(
+            output_tokens=len(output.token_ids),
+            stop_reason=output.stop_reason,
+        )
     token_ids = _flat_token_ids(output.token_ids, "TokenOutput.token_ids")
     if output.stop_reason == "aborted":
         return output, token_ids, [], "", elapsed
@@ -342,6 +355,7 @@ async def run_protocol(
             context_ids,
             params,
             int(priority),
+            turns,
         )
         generation_seconds += elapsed
         if output.num_preempted is not None:
@@ -388,13 +402,26 @@ async def run_protocol(
         if action == "search":
             provider_batch_id = uuid.uuid4().hex
             retrieval_started = time.perf_counter()
-            observation = await agent.retrieve(
-                query=content,
-                provider_batch_id=provider_batch_id,
-                turn=turn,
-                trajectory_id=request_id,
-            )
-            retrieval_seconds += time.perf_counter() - retrieval_started
+            with trace_span(
+                trace_id=request_id,
+                component="current_verl",
+                operation="retrieval",
+                attributes={
+                    "turn": turn,
+                    "top_k": TOP_K,
+                    "provider_batch_id": provider_batch_id,
+                    "query_characters": len(content),
+                },
+            ) as span:
+                observation = await agent.retrieve(
+                    query=content,
+                    provider_batch_id=provider_batch_id,
+                    turn=turn,
+                    trajectory_id=request_id,
+                )
+                elapsed = time.perf_counter() - retrieval_started
+                span.set_attributes(latency_ms=elapsed * 1000.0)
+            retrieval_seconds += elapsed
             search_count += 1
             provider_batch_ids.append(provider_batch_id)
         else:

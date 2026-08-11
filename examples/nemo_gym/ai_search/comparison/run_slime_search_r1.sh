@@ -30,6 +30,7 @@ case "${run_mode}" in
     eval_interval=""
     save_interval=""
     enable_tensorboard=0
+    default_trace_sample_rate=1.0
     ;;
   performance)
     prompts_per_step=8
@@ -38,6 +39,7 @@ case "${run_mode}" in
     eval_interval=""
     save_interval=""
     enable_tensorboard=1
+    default_trace_sample_rate=0.1
     ;;
   campaign)
     prompts_per_step=512
@@ -46,12 +48,14 @@ case "${run_mode}" in
     eval_interval=50
     save_interval=100
     enable_tensorboard=1
+    default_trace_sample_rate=0.01
     ;;
   *)
     echo "SEARCH_R1_RUN_MODE must be smoke, performance, or campaign, not ${run_mode}." >&2
     exit 1
     ;;
 esac
+trace_sample_rate="${SEARCH_R1_TRACE_SAMPLE_RATE:-${default_trace_sample_rate}}"
 
 if [[ "$(git -C "${slime_root}" rev-parse HEAD)" != "${expected_slime_commit}" ]]; then
   echo "slime checkout moved from ${expected_slime_commit}." >&2
@@ -94,6 +98,10 @@ if [[ "${seed}" == *[!0-9]* || -z "${seed}" ]]; then
   echo "SEARCH_R1_SEED must be a non-negative integer." >&2
   exit 1
 fi
+if [[ -e "${output_dir}/manifest.txt" ]]; then
+  echo "SEARCH_R1_OUTPUT_DIR already contains a run manifest: ${output_dir}" >&2
+  exit 1
+fi
 
 mkdir -p \
   "${output_dir}/checkpoints" \
@@ -104,6 +112,8 @@ mkdir -p \
 
 export PYTHONPATH="${comparison_dir}:${slime_root}:${megatron_root}${PYTHONPATH:+:${PYTHONPATH}}"
 export SEARCH_R1_RETRIEVER_URL="${retriever_url}"
+export AI_SEARCH_TRACE_PATH="${output_dir}/trajectory-spans.jsonl"
+export AI_SEARCH_TRACE_SAMPLE_RATE="${trace_sample_rate}"
 export SEARCH_R1_EVAL_FILE="${eval_file}"
 export SEARCH_R1_COMMON_EVAL_DIR="${output_dir}/common-eval"
 export TENSORBOARD_DIR="${output_dir}/tensorboard"
@@ -127,6 +137,8 @@ export PYTHONUNBUFFERED=1
   printf 'global_batch_size=%s\n' "${global_batch_size}"
   printf 'optimizer_updates_per_rollout=%s\n' "$(((prompts_per_step * 5) / global_batch_size))"
   printf 'num_rollout=%s\n' "${num_rollout}"
+  printf 'trace_path=%s\n' "${AI_SEARCH_TRACE_PATH}"
+  printf 'trace_sample_rate=%s\n' "${AI_SEARCH_TRACE_SAMPLE_RATE}"
   printf 'swanlab_source=post-run-tensorboard-conversion\n'
   printf 'formal_parity_result=%s\n' "$([[ "${run_mode}" == campaign ]] && echo candidate || echo false)"
 } > "${output_dir}/manifest.txt"
@@ -235,12 +247,14 @@ ray start \
 trap 'ray stop --force >/dev/null 2>&1 || true' EXIT INT TERM
 
 runtime_env_json=$(printf \
-  '{"env_vars":{"PYTHONPATH":"%s","CUDA_DEVICE_MAX_CONNECTIONS":"1","SEARCH_R1_RETRIEVER_URL":"%s","SEARCH_R1_EVAL_FILE":"%s","SEARCH_R1_COMMON_EVAL_DIR":"%s","TENSORBOARD_DIR":"%s"}}' \
+  '{"env_vars":{"PYTHONPATH":"%s","CUDA_DEVICE_MAX_CONNECTIONS":"1","SEARCH_R1_RETRIEVER_URL":"%s","SEARCH_R1_EVAL_FILE":"%s","SEARCH_R1_COMMON_EVAL_DIR":"%s","TENSORBOARD_DIR":"%s","AI_SEARCH_TRACE_PATH":"%s","AI_SEARCH_TRACE_SAMPLE_RATE":"%s"}}' \
   "${PYTHONPATH}" \
   "${retriever_url}" \
   "${eval_file}" \
   "${SEARCH_R1_COMMON_EVAL_DIR}" \
-  "${TENSORBOARD_DIR}")
+  "${TENSORBOARD_DIR}" \
+  "${AI_SEARCH_TRACE_PATH}" \
+  "${AI_SEARCH_TRACE_SAMPLE_RATE}")
 
 ray job submit \
   --address=http://127.0.0.1:8265 \

@@ -14,6 +14,8 @@ from collections.abc import Mapping
 from types import SimpleNamespace
 from typing import Any
 
+from framework_observability import trace_span as common_trace_span
+
 
 MAX_EXECUTABLE_TURNS = 4
 MAX_ACTION_TOKENS = 500
@@ -37,6 +39,7 @@ def _runtime() -> SimpleNamespace:
     from slime.rollout.sglang_rollout import GenerateState
     from slime.utils.http_utils import post
     from slime.utils.trace_utils import (
+        bind_trace,
         build_sglang_meta_trace_attrs,
         trace_span,
     )
@@ -45,6 +48,7 @@ def _runtime() -> SimpleNamespace:
     return SimpleNamespace(
         GenerateState=GenerateState,
         Sample=Sample,
+        bind_trace=bind_trace,
         build_sglang_meta_trace_attrs=build_sglang_meta_trace_attrs,
         post=post,
         trace_span=trace_span,
@@ -200,6 +204,7 @@ async def _model_turn(
     context_ids: list[int],
     sampling_params: dict[str, Any],
     turn: int,
+    trace_id: str,
 ) -> tuple[dict[str, Any], list[int], list[float]]:
     url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}/generate"
     payload = {
@@ -208,13 +213,23 @@ async def _model_turn(
         "return_logprob": True,
     }
     headers = _routing_headers(args, sample)
-    with runtime.trace_span(
-        sample,
-        "search_r1_model_generation",
-        attrs={"turn": turn, "max_new_tokens": MAX_ACTION_TOKENS},
-    ) as span:
-        output = await runtime.post(url, payload, headers=headers)
-        span.update(runtime.build_sglang_meta_trace_attrs(output["meta_info"]))
+    with common_trace_span(
+        trace_id=trace_id,
+        component="slime",
+        operation="model_generation",
+        attributes={"turn": turn, "max_new_tokens": MAX_ACTION_TOKENS},
+    ) as common_span:
+        with runtime.trace_span(
+            sample,
+            "search_r1_model_generation",
+            attrs={"turn": turn, "max_new_tokens": MAX_ACTION_TOKENS},
+        ) as span:
+            output = await runtime.post(url, payload, headers=headers)
+            span.update(runtime.build_sglang_meta_trace_attrs(output["meta_info"]))
+        common_span.set_attributes(
+            output_tokens=len(output["meta_info"].get("output_token_logprobs", [])),
+            stop_reason=_finish_reason(output),
+        )
     if _finish_reason(output) == "abort":
         return output, [], []
     token_ids, logprobs = _output_tokens(output)
@@ -227,33 +242,46 @@ async def _retrieve(
     sample: Any,
     query: str,
     turn: int,
+    trace_id: str,
 ) -> tuple[str, str, float]:
     provider_batch_id = uuid.uuid4().hex
     payload = {"queries": [query], "topk": TOP_K, "return_scores": True}
     started = time.perf_counter()
-    with runtime.trace_span(
-        sample,
-        "search_r1_retrieval",
-        attrs={
+    with common_trace_span(
+        trace_id=trace_id,
+        component="slime",
+        operation="retrieval",
+        attributes={
             "turn": turn,
             "top_k": TOP_K,
             "provider_batch_id": provider_batch_id,
+            "query_characters": len(query),
         },
-    ) as span:
-        async with _search_semaphore():
-            result = await runtime.post(
-                _search_url(args),
-                payload,
-                max_retries=1,
-                headers={"X-NeMo-Search-Batch-ID": provider_batch_id},
-            )
-        elapsed = time.perf_counter() - started
-        span.update(
-            {
+    ) as common_span:
+        with runtime.trace_span(
+            sample,
+            "search_r1_retrieval",
+            attrs={
+                "turn": turn,
+                "top_k": TOP_K,
                 "provider_batch_id": provider_batch_id,
-                "latency_ms": elapsed * 1000.0,
-            }
-        )
+            },
+        ) as span:
+            async with _search_semaphore():
+                result = await runtime.post(
+                    _search_url(args),
+                    payload,
+                    max_retries=1,
+                    headers={"X-NeMo-Search-Batch-ID": provider_batch_id},
+                )
+            elapsed = time.perf_counter() - started
+            span.update(
+                {
+                    "provider_batch_id": provider_batch_id,
+                    "latency_ms": elapsed * 1000.0,
+                }
+            )
+        common_span.set_attributes(latency_ms=elapsed * 1000.0)
     rows = result.get("result") if isinstance(result, Mapping) else None
     if not isinstance(rows, list) or len(rows) != 1:
         raise ValueError("retriever response must contain one result row")
@@ -296,6 +324,11 @@ async def generate(args: Any, sample: Any, sampling_params: Mapping[str, Any]) -
     sample.rollout_top_p_token_ids = None
     sample.rollout_top_p_token_offsets = None
 
+    metadata = dict(sample.metadata) if isinstance(sample.metadata, Mapping) else {}
+    trace_id = str(runtime.bind_trace(sample).trace_id)
+    metadata["observability_trace_id"] = trace_id
+    sample.metadata = metadata
+
     context_ids = list(prompt_ids)
     params = _sampling_params(sampling_params)
     terminated = False
@@ -308,7 +341,7 @@ async def generate(args: Any, sample: Any, sampling_params: Mapping[str, Any]) -
     for turn in range(1, MAX_EXECUTABLE_TURNS + 1):
         turns = turn
         output, token_ids, logprobs = await _model_turn(
-            runtime, args, sample, context_ids, params, turn
+            runtime, args, sample, context_ids, params, turn, trace_id
         )
         if _finish_reason(output) == "abort":
             sample.status = runtime.Sample.Status.ABORTED
@@ -334,7 +367,7 @@ async def generate(args: Any, sample: Any, sampling_params: Mapping[str, Any]) -
             break
         if action == "search":
             observation, provider_batch_id, retrieval_seconds = await _retrieve(
-                runtime, args, sample, content, turn
+                runtime, args, sample, content, turn, trace_id
             )
             search_count += 1
             provider_batch_ids.append(provider_batch_id)
@@ -359,7 +392,7 @@ async def generate(args: Any, sample: Any, sampling_params: Mapping[str, Any]) -
     if not terminated:
         turns = MAX_EXECUTABLE_TURNS + 1
         output, token_ids, logprobs = await _model_turn(
-            runtime, args, sample, context_ids, params, turns
+            runtime, args, sample, context_ids, params, turns, trace_id
         )
         if _finish_reason(output) == "abort":
             sample.status = runtime.Sample.Status.ABORTED
