@@ -15,4 +15,6 @@ def test_local_swanlab_installs_matching_dashboard_extra() -> None:
     assert '[[ "${SWANLAB_MODE:-}" == "local" ]]' in preparation
     assert "from importlib.metadata import version" in preparation
     assert '"swanlab[dashboard]==${AI_SEARCH_SWANLAB_VERSION}"' in preparation
-    assert "-c 'import swanboard'" in preparation
+    assert '"peewee==3.19.0"' in preparation
+    assert 'version("peewee") == "3.19.0"' in preparation
+    assert "import swanboard" in preparation

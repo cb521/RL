@@ -76,7 +76,9 @@ questions and must not be collapsed into one profiler run:
    trainer supply. The observed recipe enables SwanLab and TensorBoard; setting
    `SWANLAB_MODE=local` needs no cloud account. The observed launcher installs
    SwanLab's optional dashboard extra at the same version as the environment's
-   existing SwanLab package.
+   existing SwanLab package. It also pins Peewee 3.19.0 because SwanBoard
+   0.1.8b1 does not cap that dependency and its local transaction code is not
+   compatible with Peewee 4.
 2. Nsight Systems records CUDA, NCCL, and NVTX activity for a short steady-state
    window. It is run separately because profiler overhead would bias the clean
    end-to-end result.
