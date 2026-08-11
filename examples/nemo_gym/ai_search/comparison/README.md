@@ -262,6 +262,81 @@ logging and atomically writes one common record per question, including token
 counts derived from its response loss mask. All three adapters fail on missing
 or duplicate IDs instead of silently joining by row order.
 
+### Aligned current-veRL and slime launchers
+
+The launchers below fail closed on source revision, model revision, data hashes,
+retriever URL, and the eight-GPU requirement. `smoke` runs one 8-question x
+5-trajectory update, `performance` runs one warm-up plus three measured updates,
+and `campaign` runs the official 512-question x 5-trajectory, 500-step quality
+campaign. Only a completed campaign can be considered for the quality table.
+
+Run current veRL from its frozen checkout with:
+
+```bash
+CURRENT_VERL_ROOT=/path/to/verl-at-5cfb74f \
+SEARCH_R1_MODEL_PATH=/path/to/models--Qwen--Qwen2.5-7B/snapshots/d149729... \
+SEARCH_R1_TRAIN_FILE=/path/to/four-way/train.parquet \
+SEARCH_R1_EVAL_FILE=/path/to/four-way/test.parquet \
+SEARCH_R1_RETRIEVER_URL=http://retriever:8000/retrieve \
+SEARCH_R1_OUTPUT_DIR=/fast/local/current-verl-performance \
+SEARCH_R1_RUN_MODE=performance \
+  bash examples/nemo_gym/ai_search/comparison/run_current_verl_search_r1.sh
+```
+
+Current veRL writes console metrics, TensorBoard events, local SwanLab data,
+native rollout dumps, validation dumps, checkpoints, and a run manifest under
+the output directory. `SWANLAB_MODE=local` avoids any account or network login.
+
+slime needs the same Hugging Face snapshot for SGLang and a one-time
+Megatron-Core `torch_dist` conversion for training. In the frozen slime runtime,
+create it before the timed run:
+
+```bash
+cd /path/to/slime-at-a74ae3a
+source scripts/models/qwen2.5-7B.sh
+PYTHONPATH=/path/to/Megatron-LM python tools/convert_hf_to_torch_dist.py \
+  "${MODEL_ARGS[@]}" \
+  --hf-checkpoint /path/to/Qwen2.5-7B \
+  --save /fast/local/Qwen2.5-7B_torch_dist
+```
+
+Then launch slime with:
+
+```bash
+SLIME_ROOT=/path/to/slime-at-a74ae3a \
+SLIME_MEGATRON_ROOT=/path/to/Megatron-LM \
+SEARCH_R1_MODEL_PATH=/path/to/models--Qwen--Qwen2.5-7B/snapshots/d149729... \
+SEARCH_R1_SLIME_REF_LOAD=/fast/local/Qwen2.5-7B_torch_dist \
+SEARCH_R1_TRAIN_FILE=/path/to/four-way/train.parquet \
+SEARCH_R1_EVAL_FILE=/path/to/four-way/test.parquet \
+SEARCH_R1_RETRIEVER_URL=http://retriever:8000/retrieve \
+SEARCH_R1_OUTPUT_DIR=/fast/local/slime-performance \
+SEARCH_R1_RUN_MODE=performance \
+  bash examples/nemo_gym/ai_search/comparison/run_slime_search_r1.sh
+```
+
+The slime launcher uses four actor GPUs and four rollout GPUs with colocated
+lifecycle management. It keeps the conversion and initialization outside the
+measured update window, emits TensorBoard and raw rollout artifacts, and uses
+the common evaluation hook for campaign checkpoints. Set
+`SEARCH_R1_PRINT_COMMAND=1` on either launcher to validate and print the fully
+resolved command without starting Ray or allocating model memory.
+
+The frozen slime revision has no native SwanLab logger. Preserve its raw
+TensorBoard events as the source of truth, then mirror them to a local SwanLab
+directory outside the timed window:
+
+```bash
+swanlab convert -t tensorboard \
+  --tb_logdir /fast/local/slime-performance/tensorboard \
+  --mode local \
+  -p search-r1-four-way \
+  -l /fast/local/slime-performance/swanlab
+```
+
+Record the SwanLab and converter dependency versions in the manifest. This
+conversion is a visualization layer only and is never counted as training time.
+
 The clean and Nsight runs use the same model, data, retriever, and batch sizes,
 but remain separate measurements. Trace sampling and profiler state are recorded
 explicitly; the profile mode intentionally raises trace sampling to 100 percent.

@@ -146,6 +146,26 @@ TensorBoard plus local SwanLab, one-second GPU/host sampling, Prometheus, and a
 fixed sampled trajectory trace. Nsight Systems runs in a separate short job and
 never supplies the headline end-to-end time.
 
+The formal clean workload is fixed as follows:
+
+| Dimension | Required value |
+| --- | --- |
+| Training hardware | One identical node with eight H100 PCIe GPUs; exact SKU, memory, clocks, power limit, driver, and topology recorded |
+| Retrieval hardware | One separate identical retrieval GPU and the same network path for every framework |
+| Prompt batch | The same ordered eight questions, identified by composite `example_id` |
+| Rollout group | Five trajectories per question, exactly 40 requested and completed trajectories per outer step |
+| Update window | Four completed outer steps: step 1 warm-up, steps 2-4 measured |
+| Optimizer work | One optimizer update over all 40 trajectories per outer step; no filtering, retries, or silent replacement |
+| Initialization | Model load, engine construction, corpus/index load, compilation, and first health check reported separately |
+| Excluded work | Validation and checkpoint writing disabled in the measured window |
+| Sampling and protocol | The quality-contract values above, including seed, action limits, reward, masks, and E5 top 3 |
+
+The three steady steps are intentionally small enough to run in every public
+implementation and large enough to expose rollout/trainer transitions. They do
+not estimate trained quality. A row with a different GPU SKU, prompt order,
+trajectory count, optimizer-update count, retriever path, or instrument set is
+diagnostic-only and cannot enter the headline performance table.
+
 The result reports both wall time and actual work:
 
 - completed samples/s, generated tokens/s, trained tokens/s, and GPU-hours per

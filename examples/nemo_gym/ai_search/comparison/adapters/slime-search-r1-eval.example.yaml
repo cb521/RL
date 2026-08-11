@@ -16,4 +16,4 @@ eval:
     custom_rm_path: framework_eval_adapters.slime_reward
   datasets:
     - name: official_search_r1_test
-      path: /path/to/four-way/test.parquet
+      path: ${oc.env:SEARCH_R1_EVAL_FILE}
