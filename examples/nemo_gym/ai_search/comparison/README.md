@@ -46,6 +46,12 @@ setup instead of this small performance fixture. Its exact parity contract,
 including the few places where the paper and repository disagree, is recorded
 in [`SEARCH_R1_PARITY.md`](SEARCH_R1_PARITY.md).
 
+The later NeMo RL, original Search-R1, current veRL, and slime comparison is
+defined in [`FOUR_WAY_COMPARISON.md`](FOUR_WAY_COMPARISON.md). It separates
+native-example results from a strict protocol-aligned scoreboard and fixes the
+quality metrics, performance workload, critical-path buckets, and validity
+gates before any four-way compute is launched.
+
 Download and convert the official question data with:
 
 ```bash
