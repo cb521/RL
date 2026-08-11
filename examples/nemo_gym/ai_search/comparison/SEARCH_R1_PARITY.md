@@ -29,7 +29,7 @@ over 500 optimizer steps.
 | Optimizer mini-batch | 256 rollouts, ten updates per outer step | Public worker execution |
 | Sequence/action limit | 4,096 / 500 tokens | Same |
 | Sampling | Temperature 1.0, top-p 1.0 | Same |
-| Optimization | AdamW, LR 1e-6, 28.5% linear warmup | Same |
+| Optimization | AdamW, LR 1e-6, weight decay 0.01, betas (0.9, 0.999), epsilon 1e-8; 142 outer-step scheduler advances of linear warmup, then constant | Same |
 | KL / clipping | KL 0.001, ratio clip 0.2 | Same |
 | Run | 500 steps on 8 GPUs, save every 100 and validate every 50 | Paper plus public script |
 

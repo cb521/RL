@@ -14,6 +14,8 @@ output_dir="${SEARCH_R1_OUTPUT_DIR:?SEARCH_R1_OUTPUT_DIR must be set}"
 run_mode="${SEARCH_R1_RUN_MODE:-smoke}"
 seed="${SEARCH_R1_SEED:-42}"
 num_gpus="${SEARCH_R1_NUM_GPUS:-8}"
+lr_schedule_horizon_outer_steps=500
+lr_warmup_outer_steps=142
 
 expected_verl_commit=5cfb74fa04c7f6e5d98260b8f05157c6a9402695
 expected_model_revision=d149729398750b98c0af14eb82c78cfe92750796
@@ -131,6 +133,10 @@ export PYTHONUNBUFFERED=1
   printf 'rollouts_per_prompt=5\n'
   printf 'trajectories_per_step=%s\n' "$((prompts_per_step * 5))"
   printf 'total_steps=%s\n' "${total_steps}"
+  printf 'optimizer=AdamW\noptimizer_lr=1e-6\noptimizer_weight_decay=0.01\n'
+  printf 'optimizer_betas=0.9,0.999\noptimizer_epsilon=1e-8\n'
+  printf 'lr_schedule_horizon_outer_steps=%s\n' "${lr_schedule_horizon_outer_steps}"
+  printf 'lr_warmup_outer_steps=%s\nlr_after_warmup=constant\n' "${lr_warmup_outer_steps}"
   printf 'trace_path=%s\n' "${AI_SEARCH_TRACE_PATH}"
   printf 'trace_sample_rate=%s\n' "${AI_SEARCH_TRACE_SAMPLE_RATE}"
   printf 'formal_parity_result=%s\n' "$([[ "${run_mode}" == campaign ]] && echo candidate || echo false)"
@@ -153,8 +159,14 @@ command=(
   actor_rollout_ref.model.use_remove_padding=true
   actor_rollout_ref.model.enable_gradient_checkpointing=true
   actor_rollout_ref.actor.optim.lr=1e-6
-  actor_rollout_ref.actor.optim.lr_warmup_steps_ratio=0.285
+  actor_rollout_ref.actor.optim.lr_warmup_steps_ratio=0.0
+  "actor_rollout_ref.actor.optim.lr_warmup_steps=${lr_warmup_outer_steps}"
   actor_rollout_ref.actor.optim.weight_decay=0.01
+  "actor_rollout_ref.actor.optim.betas=[0.9,0.999]"
+  actor_rollout_ref.actor.optim.optimizer=AdamW
+  actor_rollout_ref.actor.optim.optimizer_impl=torch.optim
+  "actor_rollout_ref.actor.optim.override_optimizer_config={eps:1.0e-8}"
+  actor_rollout_ref.actor.optim.lr_scheduler_type=constant
   "actor_rollout_ref.actor.ppo_mini_batch_size=${ppo_mini_batch_size}"
   actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=1
   actor_rollout_ref.actor.use_dynamic_bsz=false

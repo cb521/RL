@@ -67,7 +67,71 @@ def adapter_contract() -> dict[str, Any]:
         "max_response_tokens": MAX_RESPONSE_TOKENS,
         "retrieval_top_k": TOP_K,
         "observation_loss_mask": 0,
+        "lr_scheduler_granularity": "outer_step",
     }
+
+
+def align_outer_step_lr(
+    args: Any,
+    rollout_id: int,
+    step_id: int,
+    model: Any,
+    optimizer: Any,
+    opt_param_scheduler: Any,
+) -> None:
+    """Keep all optimizer mini-batches in one Search-R1 outer step at one LR.
+
+    slime advances Megatron's sample-count scheduler after every optimizer
+    mini-batch. The Search-R1 veRL fork, current veRL, and NeMo RL advance their
+    LR scheduler once after the full rollout group has been trained. This
+    public slime hook resets the current mini-batch to the outer-step LR and
+    prepositions the last mini-batch so slime's normal post-update increment
+    lands on the next outer-step boundary. Optimizer work and gradients are not
+    changed.
+    """
+    del model
+    outer_batch_size = int(args.rollout_batch_size) * int(args.n_samples_per_prompt)
+    optimizer_batch_size = int(args.global_batch_size)
+    if outer_batch_size <= 0 or optimizer_batch_size <= 0:
+        raise ValueError("Search-R1 scheduler batch sizes must be positive")
+    if outer_batch_size % optimizer_batch_size:
+        raise ValueError(
+            "Search-R1 outer trajectories must divide exactly into optimizer batches"
+        )
+    updates_per_outer_step = outer_batch_size // optimizer_batch_size
+    if not 0 <= int(step_id) < updates_per_outer_step:
+        raise ValueError(
+            f"Unexpected slime optimizer step {step_id}; expected "
+            f"0..{updates_per_outer_step - 1}"
+        )
+    if int(rollout_id) < 0:
+        raise ValueError("Search-R1 rollout_id must be non-negative")
+    if getattr(opt_param_scheduler, "optimizer", optimizer) is not optimizer:
+        raise ValueError("Search-R1 scheduler and optimizer do not match")
+
+    outer_start = int(rollout_id) * outer_batch_size
+    opt_param_scheduler.num_steps = outer_start
+    current_values = [
+        (
+            opt_param_scheduler.get_lr(param_group),
+            opt_param_scheduler.get_wd(param_group)
+            * param_group.get("wd_mult", 1.0),
+        )
+        for param_group in optimizer.param_groups
+    ]
+
+    # train_one_step() calls scheduler.step(optimizer_batch_size) after the
+    # optimizer update. On the last mini-batch, place the scheduler one update
+    # before the next outer boundary so its persisted state is also exact.
+    if int(step_id) == updates_per_outer_step - 1:
+        opt_param_scheduler.num_steps = (
+            outer_start + outer_batch_size - optimizer_batch_size
+        )
+    for param_group, (learning_rate, weight_decay) in zip(
+        optimizer.param_groups, current_values, strict=True
+    ):
+        param_group["lr"] = learning_rate
+        param_group["weight_decay"] = weight_decay
 
 
 def parse_action(response: str) -> tuple[str | None, str]:

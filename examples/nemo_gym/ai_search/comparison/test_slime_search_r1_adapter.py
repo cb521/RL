@@ -286,7 +286,57 @@ def test_adapter_contract_is_protocol_frozen() -> None:
         "max_response_tokens": 4096,
         "retrieval_top_k": 3,
         "observation_loss_mask": 0,
+        "lr_scheduler_granularity": "outer_step",
     }
+
+
+class _OptimizerScheduler:
+    def __init__(self, optimizer):
+        self.optimizer = optimizer
+        self.num_steps = 0
+
+    def get_lr(self, param_group):
+        del param_group
+        return float(self.num_steps)
+
+    def get_wd(self, param_group):
+        del param_group
+        return 0.01
+
+    def step(self, increment):
+        self.num_steps += increment
+        for param_group in self.optimizer.param_groups:
+            param_group["lr"] = self.get_lr(param_group)
+            param_group["weight_decay"] = self.get_wd(param_group)
+
+
+def test_outer_step_lr_hook_holds_all_minibatches_at_one_lr() -> None:
+    for outer_batch_size, optimizer_batch_size in ((40, 40), (2560, 256)):
+        args = SimpleNamespace(
+            rollout_batch_size=outer_batch_size // 5,
+            n_samples_per_prompt=5,
+            global_batch_size=optimizer_batch_size,
+        )
+        optimizer = SimpleNamespace(param_groups=[{"lr": -1.0, "wd_mult": 1.0}])
+        scheduler = _OptimizerScheduler(optimizer)
+        updates_per_outer = outer_batch_size // optimizer_batch_size
+
+        for rollout_id in range(3):
+            for step_id in range(updates_per_outer):
+                adapter.align_outer_step_lr(
+                    args,
+                    rollout_id,
+                    step_id,
+                    model=None,
+                    optimizer=optimizer,
+                    opt_param_scheduler=scheduler,
+                )
+                assert optimizer.param_groups[0]["lr"] == float(
+                    rollout_id * outer_batch_size
+                )
+                assert optimizer.param_groups[0]["weight_decay"] == 0.01
+                scheduler.step(optimizer_batch_size)
+            assert scheduler.num_steps == (rollout_id + 1) * outer_batch_size
 
 
 def test_example_eval_config_uses_aligned_public_hooks() -> None:

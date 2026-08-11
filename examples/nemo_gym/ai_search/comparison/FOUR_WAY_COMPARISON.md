@@ -72,7 +72,7 @@ aligned scoreboard.
 | Loss mask | All retrieved observations excluded from policy loss |
 | Advantage | GRPO group mean and sample standard deviation; no leave-one-out baseline |
 | Objective | KL coefficient 0.001, low-variance KL, symmetric ratio clip 0.2, no entropy bonus |
-| Optimizer | AdamW, learning rate 1e-6, weight decay 0.01, 28.5% linear warm-up |
+| Optimizer | AdamW, learning rate 1e-6, weight decay 0.01, betas (0.9, 0.999), epsilon 1e-8; 142 outer-step scheduler advances of linear warm-up, followed by a constant learning rate |
 | Outer step | 512 questions x five trajectories |
 | Optimizer mini-batch | 256 trajectories, ten updates per outer step |
 | Campaign | 500 completed outer steps; validate every 50; save every 100 |
@@ -99,7 +99,10 @@ aligned scoreboard.
   its configured `format_score=0.2` and requires two `<answer>` blocks because
   it receives `prompt + response`, relying on the example answer in the prompt.
   Preserve SGLang token IDs/log probabilities and the observation loss mask.
-  Record its actor/rollout GPU split rather than hiding it.
+  Record its actor/rollout GPU split rather than hiding it. Use slime's public
+  before-train-step hook to hold LR constant across the ten optimizer
+  mini-batches in one outer step, matching the other three schedulers; the hook
+  does not change gradients or optimizer work.
 - **NeMo RL:** use `grpo_qwen2_5_7b_search_r1.yaml`; any diagnostic micro-batch
   override is a systems preflight, not a quality result.
 

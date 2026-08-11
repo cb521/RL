@@ -30,6 +30,8 @@ case "${run_mode}" in
     eval_interval=""
     save_interval=""
     enable_tensorboard=0
+    lr_schedule_horizon_optimizer_updates=500
+    lr_warmup_optimizer_updates=142
     default_trace_sample_rate=1.0
     ;;
   performance)
@@ -39,6 +41,8 @@ case "${run_mode}" in
     eval_interval=""
     save_interval=""
     enable_tensorboard=1
+    lr_schedule_horizon_optimizer_updates=500
+    lr_warmup_optimizer_updates=142
     default_trace_sample_rate=0.1
     ;;
   campaign)
@@ -48,6 +52,9 @@ case "${run_mode}" in
     eval_interval=50
     save_interval=100
     enable_tensorboard=1
+    # Ten optimizer mini-batches are consumed by every 2,560-trajectory outer step.
+    lr_schedule_horizon_optimizer_updates=5000
+    lr_warmup_optimizer_updates=1420
     default_trace_sample_rate=0.01
     ;;
   *)
@@ -137,6 +144,12 @@ export PYTHONUNBUFFERED=1
   printf 'global_batch_size=%s\n' "${global_batch_size}"
   printf 'optimizer_updates_per_rollout=%s\n' "$(((prompts_per_step * 5) / global_batch_size))"
   printf 'num_rollout=%s\n' "${num_rollout}"
+  printf 'optimizer=AdamW\noptimizer_lr=1e-6\noptimizer_weight_decay=0.01\n'
+  printf 'optimizer_betas=0.9,0.999\noptimizer_epsilon=1e-8\n'
+  printf 'lr_schedule_horizon_optimizer_updates=%s\n' "${lr_schedule_horizon_optimizer_updates}"
+  printf 'lr_warmup_optimizer_updates=%s\n' "${lr_warmup_optimizer_updates}"
+  printf 'lr_warmup_outer_steps=142\nlr_scheduler_granularity=outer_step\n'
+  printf 'lr_after_warmup=constant\n'
   printf 'trace_path=%s\n' "${AI_SEARCH_TRACE_PATH}"
   printf 'trace_sample_rate=%s\n' "${AI_SEARCH_TRACE_SAMPLE_RATE}"
   printf 'swanlab_source=post-run-tensorboard-conversion\n'
@@ -180,11 +193,13 @@ command=(
   --eps-clip-high 0.2
   --optimizer adam
   --lr 1e-6
-  --lr-decay-style linear
-  --lr-warmup-fraction 0.285
+  --lr-decay-style constant
+  --lr-decay-iters "${lr_schedule_horizon_optimizer_updates}"
+  --lr-warmup-iters "${lr_warmup_optimizer_updates}"
   --weight-decay 0.01
   --adam-beta1 0.9
-  --adam-beta2 0.98
+  --adam-beta2 0.999
+  --adam-eps 1e-8
   --tensor-model-parallel-size 2
   --sequence-parallel
   --pipeline-model-parallel-size 1
@@ -206,6 +221,7 @@ command=(
   --seed "${seed}"
   --custom-generate-function-path slime_search_r1_adapter.generate
   --custom-rm-path framework_eval_adapters.slime_reward
+  --custom-megatron-before-train-step-hook-path slime_search_r1_adapter.align_outer_step_lr
   --save-debug-rollout-data "${output_dir}/debug-rollouts/rollout_{rollout_id}.pt"
 )
 
