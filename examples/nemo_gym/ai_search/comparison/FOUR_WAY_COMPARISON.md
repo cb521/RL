@@ -20,7 +20,7 @@ explicit adapters.
 | Name | Source | Frozen revision | Classification |
 | --- | --- | --- | --- |
 | NeMo RL | This repository | Recorded in each run manifest | Strict text-action reproduction |
-| Original Search-R1 | [PeterGriffinJin/Search-R1](https://github.com/PeterGriffinJin/Search-R1) | Upstream base `598e61bd1d36895726d28a8d06b3a15bed19f5d3`; aligned patch head `5887e696542888f92c78b0bf42d6956ba8b277f5` | Paper's public veRL fork plus a disclosed comparison patch stack |
+| Original Search-R1 | [PeterGriffinJin/Search-R1](https://github.com/PeterGriffinJin/Search-R1) | Upstream base `598e61bd1d36895726d28a8d06b3a15bed19f5d3`; aligned patch head `d7036db77430092ca6792b50b7d08849f7186ba8` | Paper's public veRL fork plus a disclosed comparison patch stack |
 | Current veRL | [verl-project/verl](https://github.com/verl-project/verl) | `5cfb74fa04c7f6e5d98260b8f05157c6a9402695` | Current Agent Loop plus a disclosed Search-R1 adapter |
 | slime | [THUDM/slime](https://github.com/THUDM/slime/tree/main/examples/search-r1) | `a74ae3a0ad16bd8b769d5386738e8ae3d1269d7e` | Published `Search-R1 lite` example plus a disclosed aligned recipe |
 
@@ -94,8 +94,8 @@ aligned scoreboard.
 ### Required adapter disclosures
 
 - **Original Search-R1:** retain the public text-action loop and reward. Add
-  timing, batch-correlation headers, and artifact export without changing
-  generated tokens or loss masks.
+  timing, batch-correlation headers, local metrics, sampled spans, and artifact
+  export without changing generated tokens or loss masks.
 - **Current veRL:** implement the exact text-action state machine on the current
   Agent Loop API. Restoring the deleted structured `SearchTool` is sufficient
   for a native demonstration but not for the strict scoreboard because its

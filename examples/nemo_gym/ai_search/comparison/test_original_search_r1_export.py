@@ -61,7 +61,15 @@ def test_original_writer_publishes_only_on_finish(tmp_path) -> None:
     output = tmp_path / "predictions.jsonl"
     response = "<answer>Paris</answer>"
     writer = OriginalSearchR1ValidationWriter(output, _Tokenizer())
-    writer.write_batch(_Batch(response), np.array([[1.0]]), {"active_mask": [False]})
+    writer.write_batch(
+        _Batch(response),
+        np.array([[1.0]]),
+        {
+            "active_mask": [False],
+            "observability_trace_ids": ["trace-1"],
+            "provider_batch_ids": [["batch-1", "batch-2"]],
+        },
+    )
     assert not output.exists()
     assert output.with_suffix(".jsonl.partial").is_file()
 
@@ -73,6 +81,8 @@ def test_original_writer_publishes_only_on_finish(tmp_path) -> None:
     assert record["generated_tokens"] == len(response) - 3
     assert record["observation_tokens"] == 3
     assert record["native_reward"] == 1.0
+    assert record["observability_trace_id"] == "trace-1"
+    assert record["provider_batch_ids"] == ["batch-1", "batch-2"]
 
 
 def test_disabled_original_writer_is_a_noop() -> None:

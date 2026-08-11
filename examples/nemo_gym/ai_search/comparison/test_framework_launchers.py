@@ -3,6 +3,7 @@
 
 """Static contract tests for the aligned external-framework launchers."""
 
+import hashlib
 import subprocess
 from pathlib import Path
 
@@ -11,6 +12,9 @@ import yaml
 
 COMPARISON_DIR = Path(__file__).parent
 ORIGINAL_SEARCH_R1_LAUNCHER = COMPARISON_DIR / "run_original_search_r1.sh"
+ORIGINAL_SEARCH_R1_PATCH = (
+    COMPARISON_DIR / "adapters" / "original-search-r1-comparison.patch"
+)
 CURRENT_VERL_LAUNCHER = COMPARISON_DIR / "run_current_verl_search_r1.sh"
 SLIME_LAUNCHER = COMPARISON_DIR / "run_slime_search_r1.sh"
 
@@ -33,7 +37,8 @@ def test_original_search_r1_launcher_freezes_aligned_protocol() -> None:
 
     required_fragments = (
         "expected_upstream_base=598e61bd1d36895726d28a8d06b3a15bed19f5d3",
-        "expected_patched_head=5887e696542888f92c78b0bf42d6956ba8b277f5",
+        "expected_patched_head=d7036db77430092ca6792b50b7d08849f7186ba8",
+        "expected_patch_sha256=29f7fca4d30fe8acf61998b71414be68eb3a1fdbee0e15242e9979bf2fd372b6",
         "expected_model_revision=d149729398750b98c0af14eb82c78cfe92750796",
         "expected_train_sha256=64325c44a1ac79c53fc70ad36551e34b4d2ac0fa79cf0d3cca1c4d244bdeaa39",
         "expected_eval_sha256=7c7d10d003dce8b0c6c2c0c4177974d0767cd2a380123faf6ee51473bc8e2461",
@@ -52,12 +57,34 @@ def test_original_search_r1_launcher_freezes_aligned_protocol() -> None:
         "data.shuffle_train_dataloader=false",
         '"+trainer.val_at_end=${val_at_end}"',
         '"+trainer.validation_predictions_path=${output_dir}/validation/predictions.jsonl"',
+        'export AI_SEARCH_METRICS_PATH="${output_dir}/observability/step-metrics.jsonl"',
+        'export AI_SEARCH_TENSORBOARD_DIR="${output_dir}/tensorboard"',
+        'export AI_SEARCH_PROMETHEUS_PORT="${prometheus_port}"',
+        '"trainer.logger=[\'console\',\'local\']"',
         "max_turns=4",
         "retriever.topk=3",
     )
     for fragment in required_fragments:
         assert fragment in source
     assert 'if [[ "${num_gpus}" != "8" ]]' in source
+
+
+def test_original_search_r1_patch_is_frozen_and_observable() -> None:
+    patch = ORIGINAL_SEARCH_R1_PATCH.read_bytes()
+    assert hashlib.sha256(patch).hexdigest() == (
+        "29f7fca4d30fe8acf61998b71414be68eb3a1fdbee0e15242e9979bf2fd372b6"
+    )
+    source = patch.decode()
+    for fragment in (
+        "X-NeMo-Search-Batch-ID",
+        "trace_identity_batch",
+        "build_trace_identities",
+        "OriginalSearchR1LocalLogger",
+        "validation_predictions_path",
+        "lr_warmup_steps",
+        "val_at_end",
+    ):
+        assert fragment in source
 
 
 def test_current_verl_launcher_freezes_aligned_protocol() -> None:

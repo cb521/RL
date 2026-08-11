@@ -1,0 +1,621 @@
+diff --git a/benchmark_aligned.sh b/benchmark_aligned.sh
+new file mode 100755
+index 0000000000000000000000000000000000000000..d167f3e7f75e1655efe30fc0b7432e5856ab7dff
+--- /dev/null
++++ b/benchmark_aligned.sh
+@@ -0,0 +1,69 @@
++#!/usr/bin/env bash
++
++set -euo pipefail
++
++MODEL_NAME="${MODEL_NAME:-Qwen/Qwen2.5-3B-Instruct}"
++DATA_ROOT="${DATA_ROOT:?DATA_ROOT must point to the aligned Parquet fixture}"
++OUTPUT_ROOT="${OUTPUT_ROOT:?OUTPUT_ROOT must be set}"
++NUM_GPUS="${NUM_GPUS:-4}"
++TOTAL_STEPS="${TOTAL_STEPS:-4}"
++PYTHON_BIN="${PYTHON_BIN:-python}"
++# The upstream trainer numbers its first optimizer step as 1 and stops after
++# incrementing the counter. Its stop value is therefore one past the requested
++# number of actual optimizer steps.
++TRAINER_STOP_STEP="$((TOTAL_STEPS + 1))"
++
++mkdir -p "${OUTPUT_ROOT}"
++
++exec "${PYTHON_BIN}" -m verl.trainer.main_ppo \
++  data.train_files="${DATA_ROOT}/train.parquet" \
++  data.val_files="${DATA_ROOT}/validation.parquet" \
++  data.train_data_num=null \
++  data.val_data_num=null \
++  data.train_batch_size=4 \
++  data.val_batch_size=8 \
++  data.max_prompt_length=2048 \
++  data.max_response_length=256 \
++  data.max_start_length=512 \
++  data.max_obs_length=512 \
++  data.shuffle_train_dataloader=false \
++  algorithm.adv_estimator=grpo \
++  actor_rollout_ref.model.path="${MODEL_NAME}" \
++  actor_rollout_ref.model.enable_gradient_checkpointing=false \
++  actor_rollout_ref.model.use_remove_padding=true \
++  actor_rollout_ref.actor.optim.lr=1e-6 \
++  actor_rollout_ref.actor.optim.lr_warmup_steps_ratio=0.0 \
++  actor_rollout_ref.actor.use_kl_loss=true \
++  actor_rollout_ref.actor.ppo_mini_batch_size=16 \
++  actor_rollout_ref.actor.ppo_micro_batch_size=4 \
++  actor_rollout_ref.actor.fsdp_config.param_offload=false \
++  actor_rollout_ref.actor.fsdp_config.grad_offload=false \
++  actor_rollout_ref.actor.fsdp_config.optimizer_offload=false \
++  actor_rollout_ref.rollout.log_prob_micro_batch_size=16 \
++  actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
++  actor_rollout_ref.rollout.name=vllm \
++  actor_rollout_ref.rollout.gpu_memory_utilization=0.5 \
++  actor_rollout_ref.rollout.n_agent=4 \
++  actor_rollout_ref.rollout.temperature=1.0 \
++  actor_rollout_ref.rollout.top_p=0.95 \
++  actor_rollout_ref.ref.log_prob_micro_batch_size=16 \
++  actor_rollout_ref.ref.fsdp_config.param_offload=false \
++  actor_rollout_ref.actor.kl_loss_coef=0.001 \
++  actor_rollout_ref.actor.kl_loss_type=low_var_kl \
++  actor_rollout_ref.actor.state_masking=true \
++  trainer.logger="['console']" \
++  +trainer.val_only=false \
++  +trainer.val_before_train=true \
++  trainer.n_gpus_per_node="${NUM_GPUS}" \
++  trainer.nnodes=1 \
++  trainer.save_freq=4 \
++  trainer.test_freq=-1 \
++  trainer.project_name=aligned-ai-search \
++  trainer.experiment_name=search-r1 \
++  trainer.total_epochs=10 \
++  trainer.total_training_steps="${TRAINER_STOP_STEP}" \
++  trainer.default_hdfs_dir=null \
++  trainer.default_local_dir="${OUTPUT_ROOT}/checkpoints" \
++  max_turns=2 \
++  retriever.url=http://127.0.0.1:8100/retrieve \
++  retriever.topk=3
+diff --git a/search_r1/llm_agent/generation.py b/search_r1/llm_agent/generation.py
+index 6b68cb003ac3f943d45eb8d5cf48a7ebee5cd1f6..b9ce29729cbe047865789d2792dd9f4367b044ac 100644
+--- a/search_r1/llm_agent/generation.py
++++ b/search_r1/llm_agent/generation.py
+@@ -9,6 +9,14 @@ from verl import DataProto
+ from verl.utils.tracking import Tracking
+ import shutil
+ import requests
++import time
++import uuid
++
++from original_search_r1_observability import (
++    TraceIdentity,
++    new_provider_batch_id,
++    trace_identity_batch,
++)
+ 
+ @dataclass
+ class GenerationConfig:
+@@ -34,6 +42,9 @@ class LLMGenerationManager:
+         self.actor_rollout_wg = actor_rollout_wg
+         self.config = config
+         self.is_validation = is_validation
++        self.timing_raw: Dict[str, float] = {}
++        self.search_calls = 0
++        self.provider_batch_ids = defaultdict(list)
+ 
+         self.tensor_fn = TensorHelper(TensorConfig(
+             pad_token_id=tokenizer.pad_token_id,
+@@ -217,8 +228,48 @@ class LLMGenerationManager:
+         padded_output.batch = trimmed_batch
+         return padded_output
+ 
+-    def run_llm_loop(self, gen_batch, initial_input_ids: torch.Tensor) -> Tuple[Dict, Dict]:
++    def _generate_traced(
++        self,
++        active_batch: DataProto,
++        trace_identities: List[TraceIdentity],
++        turn: int,
++        final_answer_only: bool = False,
++    ) -> DataProto:
++        generation_batch_id = uuid.uuid4().hex
++        with trace_identity_batch(
++            trace_identities,
++            component='original_search_r1',
++            operation='model_generation',
++            attributes={
++                'turn': turn,
++                'final_answer_only': final_answer_only,
++                'generation_batch_id': generation_batch_id,
++                'active_trajectories': len(active_batch),
++            },
++        ) as spans:
++            output = self._generate_with_gpu_padding(active_batch)
++            token_counts = (
++                output.batch['responses'] != self.tokenizer.pad_token_id
++            ).sum(dim=-1).tolist()
++            for span, token_count in zip(spans, token_counts):
++                span.set_attributes(output_tokens=int(token_count))
++            return output
++
++    def run_llm_loop(
++        self,
++        gen_batch,
++        initial_input_ids: torch.Tensor,
++        trace_identities: List[TraceIdentity] = None,
++    ) -> Tuple[Dict, Dict]:
+         """Run main LLM generation loop."""
++        if trace_identities is None:
++            trace_identities = []
++        elif len(trace_identities) != len(gen_batch):
++            raise ValueError(
++                f'trace identity count {len(trace_identities)} does not match '
++                f'generation batch {len(gen_batch)}'
++            )
++        self.provider_batch_ids = defaultdict(list)
+         
+         original_left_side = {'input_ids': initial_input_ids[:, -self.config.max_start_length:]}
+         original_right_side = {'responses': initial_input_ids[:, []], 'responses_with_info_mask': initial_input_ids[:, []]}
+@@ -242,8 +293,17 @@ class LLMGenerationManager:
+             # gen_output = self.actor_rollout_wg.generate_sequences(rollings)
+             rollings_active = DataProto.from_dict({
+                 k: v[active_mask] for k, v in rollings.batch.items()
+-            })            
+-            gen_output = self._generate_with_gpu_padding(rollings_active)
++            })
++            active_trace_identities = [
++                identity
++                for identity, active in zip(trace_identities, active_mask.tolist())
++                if active
++            ]
++            gen_output = self._generate_traced(
++                rollings_active,
++                active_trace_identities,
++                turn=step + 1,
++            )
+ 
+             meta_info = gen_output.meta_info            
+             responses_ids, responses_str = self._postprocess_responses(gen_output.batch['responses'])
+@@ -251,7 +311,11 @@ class LLMGenerationManager:
+ 
+             # Execute in environment and process observations
+             next_obs, dones, valid_action, is_search = self.execute_predictions(
+-                responses_str, self.tokenizer.pad_token, active_mask
++                responses_str,
++                self.tokenizer.pad_token,
++                active_mask,
++                trace_identities=trace_identities,
++                turn=step + 1,
+             )
+             
+             curr_active_mask = torch.tensor([not done for done in dones], dtype=torch.bool)
+@@ -285,8 +349,18 @@ class LLMGenerationManager:
+             # gen_output = self.actor_rollout_wg.generate_sequences(rollings)
+             rollings_active = DataProto.from_dict({
+                 k: v[active_mask] for k, v in rollings.batch.items()
+-            })            
+-            gen_output = self._generate_with_gpu_padding(rollings_active)
++            })
++            active_trace_identities = [
++                identity
++                for identity, active in zip(trace_identities, active_mask.tolist())
++                if active
++            ]
++            gen_output = self._generate_traced(
++                rollings_active,
++                active_trace_identities,
++                turn=self.config.max_turns + 1,
++                final_answer_only=True,
++            )
+ 
+             meta_info = gen_output.meta_info            
+             responses_ids, responses_str = self._postprocess_responses(gen_output.batch['responses'])
+@@ -294,7 +368,12 @@ class LLMGenerationManager:
+ 
+             # # Execute in environment and process observations
+             _, dones, valid_action, is_search = self.execute_predictions(
+-                responses_str, self.tokenizer.pad_token, active_mask, do_search=False
++                responses_str,
++                self.tokenizer.pad_token,
++                active_mask,
++                do_search=False,
++                trace_identities=trace_identities,
++                turn=self.config.max_turns + 1,
+             )
+ 
+             curr_active_mask = torch.tensor([not done for done in dones], dtype=torch.bool)
+@@ -313,6 +392,14 @@ class LLMGenerationManager:
+         meta_info['active_mask'] = active_mask.tolist()
+         meta_info['valid_action_stats'] = valid_action_stats.tolist()
+         meta_info['valid_search_stats'] = valid_search_stats.tolist()
++        if trace_identities:
++            meta_info['observability_trace_ids'] = [
++                identity.trace_id for identity in trace_identities
++            ]
++            meta_info['provider_batch_ids'] = [
++                self.provider_batch_ids[identity.trace_id]
++                for identity in trace_identities
++            ]
+         
+         print("ACTIVE_TRAJ_NUM:", active_num_list)
+         
+@@ -350,7 +437,15 @@ class LLMGenerationManager:
+         
+         return final_output
+ 
+-    def execute_predictions(self, predictions: List[str], pad_token: str, active_mask=None, do_search=True) -> List[str]:
++    def execute_predictions(
++        self,
++        predictions: List[str],
++        pad_token: str,
++        active_mask=None,
++        do_search=True,
++        trace_identities: List[TraceIdentity] = None,
++        turn: int = None,
++    ) -> List[str]:
+         """
+         Execute predictions across multiple environments.
+         NOTE: the function is the actual `step` function in the environment
+@@ -366,10 +461,23 @@ class LLMGenerationManager:
+         """
+         cur_actions, contents = self.postprocess_predictions(predictions)
+         next_obs, dones, valid_action, is_search = [], [], [], []
++        if trace_identities is None:
++            trace_identities = []
++        elif len(trace_identities) != len(predictions):
++            raise ValueError('trace identities must align with predictions')
+         
+         search_queries = [content for action, content in zip(cur_actions, contents) if action == 'search']
++        search_trace_identities = [
++            identity
++            for action, identity in zip(cur_actions, trace_identities)
++            if action == 'search'
++        ]
+         if do_search:
+-            search_results = self.batch_search(search_queries)
++            search_results = self.batch_search(
++                search_queries,
++                trace_identities=search_trace_identities,
++                turn=turn,
++            )
+             assert len(search_results) == sum([1 for action in cur_actions if action == 'search'])
+         else:
+             search_results = [''] * sum([1 for action in cur_actions if action == 'search'])
+@@ -435,7 +543,12 @@ If I want to give the final answer, I should put the answer between <answer> and
+             
+         return actions, contents
+ 
+-    def batch_search(self, queries: List[str] = None) -> str:
++    def batch_search(
++        self,
++        queries: List[str] = None,
++        trace_identities: List[TraceIdentity] = None,
++        turn: int = None,
++    ) -> str:
+         """
+         Batchified search for queries.
+         Args:
+@@ -443,19 +556,63 @@ If I want to give the final answer, I should put the answer between <answer> and
+         Returns:
+             search results which is concatenated into a string
+         """
+-        results = self._batch_search(queries)['result']
++        results = self._batch_search(
++            queries,
++            trace_identities=trace_identities,
++            turn=turn,
++        )['result']
+         
+         return [self._passages2string(result) for result in results]
+ 
+-    def _batch_search(self, queries):
+-        
++    def _batch_search(
++        self,
++        queries,
++        trace_identities: List[TraceIdentity] = None,
++        turn: int = None,
++    ):
+         payload = {
+             "queries": queries,
+             "topk": self.config.topk,
+             "return_scores": True
+         }
+-        
+-        return requests.post(self.config.search_url, json=payload).json()
++        trace_identities = trace_identities or []
++        if trace_identities and len(trace_identities) != len(queries):
++            raise ValueError('search trace identities must align with queries')
++        provider_batch_id = new_provider_batch_id()
++        for identity in trace_identities:
++            self.provider_batch_ids[identity.trace_id].append(provider_batch_id)
++        with trace_identity_batch(
++            trace_identities,
++            component='original_search_r1',
++            operation='retrieval_http',
++            attributes={
++                'turn': turn,
++                'provider_batch_id': provider_batch_id,
++                'query_count': len(queries),
++                'top_k': self.config.topk,
++            },
++        ) as spans:
++            for span, query in zip(spans, queries):
++                span.set_attributes(query=query)
++            started = time.perf_counter()
++            try:
++                response = requests.post(
++                    self.config.search_url,
++                    json=payload,
++                    headers={'X-NeMo-Search-Batch-ID': provider_batch_id},
++                    timeout=10,
++                )
++                response.raise_for_status()
++                result = response.json()
++                for span in spans:
++                    span.set_attributes(http_status=response.status_code)
++                return result
++            finally:
++                elapsed = time.perf_counter() - started
++                self.timing_raw["search"] = self.timing_raw.get("search", 0.0) + elapsed
++                self.search_calls += len(queries)
++                for span in spans:
++                    span.set_attributes(retrieval_seconds=elapsed)
+ 
+     def _passages2string(self, retrieval_result):
+         format_reference = ''
+diff --git a/verl/trainer/ppo/ray_trainer.py b/verl/trainer/ppo/ray_trainer.py
+index 4304e0584813c36857265f17238eab38d4b816c3..3e0928aefe6a9113710618434acf5fd0a929ed94 100644
+--- a/verl/trainer/ppo/ray_trainer.py
++++ b/verl/trainer/ppo/ray_trainer.py
+@@ -288,7 +288,10 @@ def compute_timing_metrics(batch, timing_raw):
+     num_tokens_of_section = {
+         'gen': num_response_tokens,
+         **{
+-            name: num_overall_tokens for name in ['ref', 'values', 'adv', 'update_critic', 'update_actor', 'rollout']
++            name: num_overall_tokens for name in [
++                'policy_logprob', 'ref', 'values', 'adv', 'reward', 'advantage',
++                'update_critic', 'update_actor', 'rollout'
++            ]
+         },
+     }
+ 
+@@ -441,6 +444,18 @@ class RayPPOTrainer(object):
+         import torch
+         reward_tensor_lst = []
+         data_source_lst = []
++        prediction_path = self.config.trainer.get(
++            'validation_predictions_path', None
++        )
++        prediction_writer = None
++        if prediction_path:
++            from original_search_r1_export import (
++                OriginalSearchR1ValidationWriter,
++            )
++
++            prediction_writer = OriginalSearchR1ValidationWriter(
++                prediction_path, self.tokenizer
++            )
+ 
+         gen_config = GenerationConfig(
+             max_turns=self.config.max_turns,
+@@ -494,11 +509,28 @@ class RayPPOTrainer(object):
+ 
+                 reward_tensor_lst.append(reward_tensor)
+                 data_source_lst.append(test_batch.non_tensor_batch.get('data_source', ['unknown'] * reward_tensor.shape[0]))
++                if prediction_writer is not None:
++                    prediction_writer.write_batch(
++                        test_batch,
++                        reward_tensor,
++                        test_output_gen_batch.meta_info,
++                    )
+         else:
+             for batch_dict in self.val_dataloader:
+                 timing_raw = {}
+                 test_batch: DataProto = DataProto.from_single_dict(batch_dict)
+                 # test_batch = test_batch.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n_agent, interleave=True)
++                from original_search_r1_observability import (
++                    build_trace_identities,
++                )
++
++                trace_identities = build_trace_identities(
++                    global_step=self.global_steps,
++                    batch_size=len(test_batch),
++                    extra_info=test_batch.non_tensor_batch.get('extra_info'),
++                    indexes=test_batch.non_tensor_batch.get('index'),
++                    phase='validation',
++                )
+                 
+                 test_gen_batch = test_batch.pop(batch_keys=['input_ids', 'attention_mask', 'position_ids'])
+                 test_gen_batch.meta_info = {
+@@ -515,6 +547,7 @@ class RayPPOTrainer(object):
+                         final_gen_batch_output = generation_manager.run_llm_loop(
+                             gen_batch=test_gen_batch,
+                             initial_input_ids=first_input_ids,
++                            trace_identities=trace_identities,
+                         )
+                     
+                     test_batch = test_batch.union(final_gen_batch_output)
+@@ -528,6 +561,15 @@ class RayPPOTrainer(object):
+ 
+                     reward_tensor_lst.append(reward_tensor)
+                     data_source_lst.append(test_batch.non_tensor_batch.get('data_source', ['unknown'] * reward_tensor.shape[0]))
++                    if prediction_writer is not None:
++                        prediction_writer.write_batch(
++                            test_batch,
++                            reward_tensor,
++                            final_gen_batch_output.meta_info,
++                        )
++
++        if prediction_writer is not None:
++            prediction_writer.finish()
+ 
+         reward_tensor = torch.cat([rw.sum(-1) for rw in reward_tensor_lst], dim=0).cpu()  # (batch_size,)
+         # reward_tensor = torch.cat(reward_tensor_lst, dim=0).sum(-1).cpu()  # (batch_size,)
+@@ -701,6 +743,18 @@ class RayPPOTrainer(object):
+                 batch: DataProto = DataProto.from_single_dict(batch_dict)
+                 batch = batch.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n_agent, interleave=True)
+ 
++                from original_search_r1_observability import (
++                    build_trace_identities,
++                )
++
++                trace_identities = build_trace_identities(
++                    global_step=self.global_steps,
++                    batch_size=len(batch),
++                    extra_info=batch.non_tensor_batch.get('extra_info'),
++                    indexes=batch.non_tensor_batch.get('index'),
++                    phase='train',
++                )
++
+                 # pop those keys for generation
+                 gen_batch = batch.pop(batch_keys=['input_ids', 'attention_mask', 'position_ids'])
+ 
+@@ -726,18 +780,22 @@ class RayPPOTrainer(object):
+ 
+                         with _timer('gen', timing_raw):
+                             generation_manager.timing_raw = timing_raw
++                            generation_manager.search_calls = 0
+                             final_gen_batch_output = generation_manager.run_llm_loop(
+                                 gen_batch=gen_batch,
+                                 initial_input_ids=first_input_ids,
++                                trace_identities=trace_identities,
+                             )
+ 
+                         # final_gen_batch_output.batch.apply(lambda x: x.long(), inplace=True)
+                         for key in final_gen_batch_output.batch.keys():
+                             final_gen_batch_output.batch[key] = final_gen_batch_output.batch[key].long()
+ 
+-                        with torch.no_grad():
+-                            output = self.actor_rollout_wg.compute_log_prob(final_gen_batch_output)
+-                            final_gen_batch_output = final_gen_batch_output.union(output)
++                        with _timer('policy_logprob', timing_raw):
++                            with torch.no_grad():
++                                output = self.actor_rollout_wg.compute_log_prob(final_gen_batch_output)
++                                final_gen_batch_output = final_gen_batch_output.union(output)
++                        metrics['env/search_calls'] = generation_manager.search_calls
+ 
+                         # batch.non_tensor_batch['uid'] = np.array([str(uuid.uuid4()) for _ in range(len(batch.batch))],
+                         #                                         dtype=object)
+@@ -779,30 +837,32 @@ class RayPPOTrainer(object):
+                         # compute scores. Support both model and function-based.
+                         # We first compute the scores using reward model. Then, we call reward_fn to combine
+                         # the results from reward model and rule-based results.
+-                        if self.use_rm:
+-                            # we first compute reward model score
+-                            reward_tensor = self.rm_wg.compute_rm_score(batch)
+-                            batch = batch.union(reward_tensor)
+-
+-                        # we combine with rule-based rm
+-                        reward_tensor = self.reward_fn(batch)
+-                        batch.batch['token_level_scores'] = reward_tensor
+-
+-                        # compute rewards. apply_kl_penalty if available
+-                        if not self.config.actor_rollout_ref.actor.use_kl_loss:
+-                            batch, kl_metrics = apply_kl_penalty(batch,
+-                                                                 kl_ctrl=self.kl_ctrl,
+-                                                                 kl_penalty=self.config.algorithm.kl_penalty)
+-                            metrics.update(kl_metrics)
+-                        else:
+-                            batch.batch['token_level_rewards'] = batch.batch['token_level_scores']
+-
+-                        # compute advantages, executed on the driver process
+-                        batch = compute_advantage(batch,
+-                                                  adv_estimator=self.config.algorithm.adv_estimator,
+-                                                  gamma=self.config.algorithm.gamma,
+-                                                  lam=self.config.algorithm.lam,
+-                                                  num_repeat=self.config.actor_rollout_ref.rollout.n)
++                        with _timer('reward', timing_raw):
++                            if self.use_rm:
++                                # we first compute reward model score
++                                reward_tensor = self.rm_wg.compute_rm_score(batch)
++                                batch = batch.union(reward_tensor)
++
++                            # we combine with rule-based rm
++                            reward_tensor = self.reward_fn(batch)
++                            batch.batch['token_level_scores'] = reward_tensor
++
++                        with _timer('advantage', timing_raw):
++                            # compute rewards. apply_kl_penalty if available
++                            if not self.config.actor_rollout_ref.actor.use_kl_loss:
++                                batch, kl_metrics = apply_kl_penalty(batch,
++                                                                     kl_ctrl=self.kl_ctrl,
++                                                                     kl_penalty=self.config.algorithm.kl_penalty)
++                                metrics.update(kl_metrics)
++                            else:
++                                batch.batch['token_level_rewards'] = batch.batch['token_level_scores']
++
++                            # compute advantages, executed on the driver process
++                            batch = compute_advantage(batch,
++                                                      adv_estimator=self.config.algorithm.adv_estimator,
++                                                      gamma=self.config.algorithm.gamma,
++                                                      lam=self.config.algorithm.lam,
++                                                      num_repeat=self.config.actor_rollout_ref.rollout.n)
+ 
+                     # update critic
+                     if self.use_critic:
+@@ -845,7 +905,7 @@ class RayPPOTrainer(object):
+                 if self.global_steps >= self.total_training_steps:
+ 
+                     # perform validation after training
+-                    if self.val_reward_fn is not None:
++                    if self.val_reward_fn is not None and self.config.trainer.get('val_at_end', True):
+                         val_metrics = self._validate()
+                         pprint(f'Final validation metrics: {val_metrics}')
+                         logger.log(data=val_metrics, step=self.global_steps)
+diff --git a/verl/utils/tracking.py b/verl/utils/tracking.py
+index b1fbd6f330451b89286644e226fb743237bc436c..6d27e7edbcbf2ab76f0539b8fda04c961b790a0f 100644
+--- a/verl/utils/tracking.py
++++ b/verl/utils/tracking.py
+@@ -22,7 +22,7 @@ from typing import List, Union, Dict, Any
+ 
+ 
+ class Tracking(object):
+-    supported_backend = ['wandb', 'mlflow', 'console']
++    supported_backend = ['wandb', 'mlflow', 'console', 'local']
+ 
+     def __init__(self, project_name, experiment_name, default_backend: Union[str, List[str]] = 'console', config=None):
+         if isinstance(default_backend, str):
+@@ -56,6 +56,16 @@ class Tracking(object):
+             self.console_logger = LocalLogger(print_to_console=True)
+             self.logger['console'] = self.console_logger
+ 
++        if 'local' in default_backend:
++            from original_search_r1_observability import (
++                OriginalSearchR1LocalLogger,
++            )
++            self.logger['local'] = OriginalSearchR1LocalLogger(
++                project_name=project_name,
++                experiment_name=experiment_name,
++                config=config,
++            )
++
+     def log(self, data, step, backend=None):
+         for default_backend, logger_instance in self.logger.items():
+             if backend is None or default_backend in backend:
+diff --git a/verl/workers/fsdp_workers.py b/verl/workers/fsdp_workers.py
+index e5ba4ea39448b3b4af59f5340f75212761ca4e72..d62764d6466b8bead87796e4abcecf2b8ee1b7eb 100644
+--- a/verl/workers/fsdp_workers.py
++++ b/verl/workers/fsdp_workers.py
+@@ -232,8 +232,10 @@ class ActorRolloutRefWorker(Worker):
+                                           weight_decay=optim_config.get('weight_decay', 1e-2))
+ 
+             total_steps = optim_config.get('total_training_steps', 0)
+-            num_warmup_steps_ratio = optim_config.get('lr_warmup_steps_ratio', 0.)
+-            num_warmup_steps = int(num_warmup_steps_ratio * total_steps)
++            num_warmup_steps = optim_config.get('lr_warmup_steps', None)
++            if num_warmup_steps is None:
++                num_warmup_steps_ratio = optim_config.get('lr_warmup_steps_ratio', 0.)
++                num_warmup_steps = int(num_warmup_steps_ratio * total_steps)
+ 
+             print(f'Total steps: {total_steps}, num_warmup_steps: {num_warmup_steps}')
+ 
+@@ -668,8 +670,10 @@ class CriticWorker(Worker):
+                                        weight_decay=config.optim.get('weight_decay', 1e-2))
+ 
+         total_steps = config.optim.get('total_training_steps', 0)
+-        num_warmup_steps_ratio = config.optim.get('lr_warmup_steps_ratio', 0.)
+-        num_warmup_steps = int(num_warmup_steps_ratio * total_steps)
++        num_warmup_steps = config.optim.get('lr_warmup_steps', None)
++        if num_warmup_steps is None:
++            num_warmup_steps_ratio = config.optim.get('lr_warmup_steps_ratio', 0.)
++            num_warmup_steps = int(num_warmup_steps_ratio * total_steps)
+ 
+         print(f'Total steps: {total_steps}, num_warmup_steps: {num_warmup_steps}')
+ 

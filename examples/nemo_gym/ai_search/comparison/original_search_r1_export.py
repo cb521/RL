@@ -87,6 +87,17 @@ class OriginalSearchR1ValidationWriter:
             active = active.tolist()
         if not isinstance(active, list) or len(active) != batch_size:
             raise ValueError("generation active_mask does not match validation batch")
+        trace_ids = generation_meta.get("observability_trace_ids")
+        provider_batch_ids = generation_meta.get("provider_batch_ids")
+        if trace_ids is not None and (
+            not isinstance(trace_ids, list) or len(trace_ids) != batch_size
+        ):
+            raise ValueError("observability trace IDs do not match validation batch")
+        if provider_batch_ids is not None and (
+            not isinstance(provider_batch_ids, list)
+            or len(provider_batch_ids) != batch_size
+        ):
+            raise ValueError("provider batch IDs do not match validation batch")
 
         records: list[dict[str, Any]] = []
         for index in range(batch_size):
@@ -143,6 +154,16 @@ class OriginalSearchR1ValidationWriter:
                 "observation_tokens": observation_tokens,
                 "native_reward": native_reward,
             }
+            if trace_ids is not None:
+                record["observability_trace_id"] = str(trace_ids[index])
+            if provider_batch_ids is not None:
+                row_batch_ids = provider_batch_ids[index]
+                if not isinstance(row_batch_ids, list) or not all(
+                    isinstance(batch_id, str) and batch_id
+                    for batch_id in row_batch_ids
+                ):
+                    raise ValueError("provider batch IDs must be non-empty strings")
+                record["provider_batch_ids"] = row_batch_ids
             records.append(record)
 
         with self.partial.open("a", encoding="utf-8") as destination:

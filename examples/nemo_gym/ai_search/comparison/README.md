@@ -213,12 +213,16 @@ The converter rereads its output and rejects any change to the prompt, answer,
 row order, reward model, or other source field. On the frozen official file it
 finds 51,713 unique composite IDs but only 26,843 unique raw IDs.
 
-For the original Search-R1 fork at the frozen base revision, apply the disclosed
-export-only patch and put this comparison directory on `PYTHONPATH`:
+For the original Search-R1 fork at the frozen base revision, apply and commit
+the disclosed comparison diff, then put this comparison directory on
+`PYTHONPATH`:
 
 ```bash
 git -C /path/to/Search-R1 apply \
-  /path/to/nemo-rl/examples/nemo_gym/ai_search/comparison/adapters/original-search-r1-validation.patch
+  /path/to/nemo-rl/examples/nemo_gym/ai_search/comparison/adapters/original-search-r1-comparison.patch
+git -C /path/to/Search-R1 add \
+  benchmark_aligned.sh search_r1 verl
+git -C /path/to/Search-R1 commit -m 'Apply aligned Search-R1 comparison patch'
 export PYTHONPATH="/path/to/nemo-rl/examples/nemo_gym/ai_search/comparison:${PYTHONPATH}"
 ```
 
@@ -228,9 +232,11 @@ Add this Hydra override to validation:
 +trainer.validation_predictions_path=/path/to/original-search-r1-predictions.jsonl
 ```
 
-The patch calls `original_search_r1_export.py` only after generation and native
-reward computation. It streams response-only text, loss-mask-derived generated
-and observation token counts, native reward, status, and stable identity to a
+The launcher verifies the full diff SHA-256, so the local commit hash may differ
+without weakening the source gate. The patch calls
+`original_search_r1_export.py` only after generation and native reward
+computation. It streams response-only text, loss-mask-derived generated and
+observation token counts, native reward, status, and stable identity to a
 partial file, then publishes it atomically after validation finishes.
 
 For current veRL, point `reward.custom_reward_function.path` at
@@ -307,7 +313,7 @@ campaign. Only a completed campaign can be considered for the quality table.
 Run the original Search-R1 fork from its patched comparison checkout with:
 
 ```bash
-ORIGINAL_SEARCH_R1_ROOT=/path/to/Search-R1-at-5887e69 \
+ORIGINAL_SEARCH_R1_ROOT=/path/to/Search-R1-at-d7036db \
 SEARCH_R1_MODEL_PATH=/path/to/models--Qwen--Qwen2.5-7B/snapshots/d149729... \
 SEARCH_R1_TRAIN_FILE=/path/to/four-way/train.parquet \
 SEARCH_R1_EVAL_FILE=/path/to/four-way/test.parquet \
@@ -318,9 +324,23 @@ SEARCH_R1_RUN_MODE=performance \
 ```
 
 Its manifest records the untouched public base `598e61b` separately from the
-comparison patch head `5887e69`. The patch stack adds benchmark counters,
+comparison patch head `d7036db`. The patch stack adds benchmark counters,
 outer-step scheduler alignment, optional final validation, and common
-validation export; it is not labeled as an upstream Search-R1 release.
+validation export. It also writes sampled generation/retrieval spans, passes a
+provider-batch ID to E5, mirrors reduced metrics to raw JSONL and TensorBoard,
+and exposes driver metrics on Prometheus port 9108 by default. It is not
+labeled as an upstream Search-R1 release.
+
+After the timed process exits, mirror its TensorBoard source of truth into a
+local SwanLab directory without an account:
+
+```bash
+swanlab convert -t tensorboard \
+  --tb_logdir /fast/local/original-search-r1-performance/tensorboard \
+  --mode local \
+  -p search-r1-four-way \
+  -l /fast/local/original-search-r1-performance/swanlab
+```
 
 Run current veRL from its frozen checkout with:
 

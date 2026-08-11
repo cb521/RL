@@ -16,7 +16,8 @@ seed="${SEARCH_R1_SEED:-42}"
 num_gpus="${SEARCH_R1_NUM_GPUS:-8}"
 
 expected_upstream_base=598e61bd1d36895726d28a8d06b3a15bed19f5d3
-expected_patched_head=5887e696542888f92c78b0bf42d6956ba8b277f5
+expected_patched_head=d7036db77430092ca6792b50b7d08849f7186ba8
+expected_patch_sha256=29f7fca4d30fe8acf61998b71414be68eb3a1fdbee0e15242e9979bf2fd372b6
 expected_model_revision=d149729398750b98c0af14eb82c78cfe92750796
 expected_train_sha256=64325c44a1ac79c53fc70ad36551e34b4d2ac0fa79cf0d3cca1c4d244bdeaa39
 expected_eval_sha256=7c7d10d003dce8b0c6c2c0c4177974d0767cd2a380123faf6ee51473bc8e2461
@@ -68,16 +69,22 @@ case "${run_mode}" in
     ;;
 esac
 trace_sample_rate="${SEARCH_R1_TRACE_SAMPLE_RATE:-${default_trace_sample_rate}}"
+prometheus_port="${SEARCH_R1_PROMETHEUS_PORT:-9108}"
 # The old trainer starts at global step 1 and stops after incrementing it.
 trainer_stop_step=$((total_steps + 1))
 
-if [[ "$(git -C "${search_r1_root}" rev-parse HEAD)" != "${expected_patched_head}" ]]; then
-  echo "Patched Search-R1 checkout moved from ${expected_patched_head}." >&2
+actual_patched_head="$(git -C "${search_r1_root}" rev-parse HEAD)"
+if ! git -C "${search_r1_root}" merge-base --is-ancestor \
+  "${expected_upstream_base}" "${actual_patched_head}"; then
+  echo "Search-R1 patch head does not descend from ${expected_upstream_base}." >&2
   exit 1
 fi
-if ! git -C "${search_r1_root}" merge-base --is-ancestor \
-  "${expected_upstream_base}" "${expected_patched_head}"; then
-  echo "Search-R1 patch head does not descend from ${expected_upstream_base}." >&2
+actual_patch_sha256="$({
+  git -C "${search_r1_root}" diff --full-index --binary \
+    "${expected_upstream_base}..${actual_patched_head}"
+} | sha256sum | cut -d ' ' -f 1)"
+if [[ "${actual_patch_sha256}" != "${expected_patch_sha256}" ]]; then
+  echo "Search-R1 comparison diff does not match ${expected_patch_sha256}." >&2
   exit 1
 fi
 if ! git -C "${search_r1_root}" diff --quiet || \
@@ -113,6 +120,11 @@ if [[ "${seed}" == *[!0-9]* || -z "${seed}" ]]; then
   echo "SEARCH_R1_SEED must be a non-negative integer." >&2
   exit 1
 fi
+if [[ "${prometheus_port}" == *[!0-9]* || -z "${prometheus_port}" ]] || \
+  (( prometheus_port < 1 || prometheus_port > 65535 )); then
+  echo "SEARCH_R1_PROMETHEUS_PORT must be an integer in [1, 65535]." >&2
+  exit 1
+fi
 if [[ -e "${output_dir}/manifest.txt" ]]; then
   echo "SEARCH_R1_OUTPUT_DIR already contains a run manifest: ${output_dir}" >&2
   exit 1
@@ -120,12 +132,16 @@ fi
 
 mkdir -p \
   "${output_dir}/checkpoints" \
+  "${output_dir}/tensorboard" \
   "${output_dir}/validation" \
   "${output_dir}/observability"
 
 export PYTHONPATH="${comparison_dir}:${search_r1_root}${PYTHONPATH:+:${PYTHONPATH}}"
 export AI_SEARCH_TRACE_PATH="${output_dir}/observability/trajectory-spans.jsonl"
 export AI_SEARCH_TRACE_SAMPLE_RATE="${trace_sample_rate}"
+export AI_SEARCH_METRICS_PATH="${output_dir}/observability/step-metrics.jsonl"
+export AI_SEARCH_TENSORBOARD_DIR="${output_dir}/tensorboard"
+export AI_SEARCH_PROMETHEUS_PORT="${prometheus_port}"
 export TOKENIZERS_PARALLELISM=false
 export PYTHONUNBUFFERED=1
 
@@ -133,7 +149,9 @@ export PYTHONUNBUFFERED=1
   printf 'framework=original-search-r1\n'
   printf 'run_mode=%s\n' "${run_mode}"
   printf 'source_upstream_base=%s\n' "${expected_upstream_base}"
-  printf 'source_patched_head=%s\n' "${expected_patched_head}"
+  printf 'source_patched_head=%s\n' "${actual_patched_head}"
+  printf 'reference_patch_head=%s\n' "${expected_patched_head}"
+  printf 'source_patch_sha256=%s\n' "${actual_patch_sha256}"
   printf 'adapter_commit=%s\n' "$(git -C "${comparison_dir}" rev-parse HEAD)"
   printf 'model_revision=%s\n' "${expected_model_revision}"
   printf 'train_sha256=%s\neval_sha256=%s\n' "${expected_train_sha256}" "${expected_eval_sha256}"
@@ -146,6 +164,8 @@ export PYTHONUNBUFFERED=1
   printf 'optimizer_betas=0.9,0.999\noptimizer_epsilon=1e-8\n'
   printf 'lr_warmup_outer_steps=%s\nlr_after_warmup=constant\n' "${lr_warmup_outer_steps}"
   printf 'trace_path=%s\ntrace_sample_rate=%s\n' "${AI_SEARCH_TRACE_PATH}" "${AI_SEARCH_TRACE_SAMPLE_RATE}"
+  printf 'metrics_path=%s\ntensorboard_dir=%s\n' "${AI_SEARCH_METRICS_PATH}" "${AI_SEARCH_TENSORBOARD_DIR}"
+  printf 'prometheus_url=http://127.0.0.1:%s/metrics\n' "${AI_SEARCH_PROMETHEUS_PORT}"
   printf 'formal_parity_result=%s\n' "$([[ "${run_mode}" == campaign ]] && echo candidate || echo false)"
 } > "${output_dir}/manifest.txt"
 
@@ -198,7 +218,7 @@ command=(
   "actor_rollout_ref.rollout.log_prob_micro_batch_size=${log_prob_micro_batch_size}"
   "actor_rollout_ref.ref.log_prob_micro_batch_size=${log_prob_micro_batch_size}"
   actor_rollout_ref.ref.fsdp_config.param_offload=false
-  "trainer.logger=['console']"
+  "trainer.logger=['console','local']"
   +trainer.val_only=false
   "+trainer.val_before_train=${val_before_train}"
   "+trainer.val_at_end=${val_at_end}"
