@@ -48,12 +48,17 @@ def _convert_row(row: dict[str, Any]) -> dict[str, Any]:
     if not answers:
         raise ValueError("golden_answers must not be empty")
 
+    data_source = str(row["data_source"])
+    source_id = str(row["id"])
+    if not data_source or not source_id:
+        raise ValueError("data_source and id must be non-empty")
+
     return {
         "question": str(row["question"]),
         "answers": answers,
         "supporting_doc_ids": [],
-        "data_source": str(row["data_source"]),
-        "source_id": str(row["id"]),
+        "data_source": data_source,
+        "source_id": f"{data_source}:{source_id}",
         "agent_ref": AGENT_REF,
         "responses_create_params": {
             "input": messages,

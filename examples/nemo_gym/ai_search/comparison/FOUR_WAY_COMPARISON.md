@@ -58,8 +58,8 @@ aligned scoreboard.
 | Dimension | Required value |
 | --- | --- |
 | Initial policy | `Qwen/Qwen2.5-7B` base at revision `d149729398750b98c0af14eb82c78cfe92750796` |
-| Train questions | NQ + HotpotQA, 169,615 rows, converted SHA-256 `249fca5d8251e3e37a30e987433181f9fe4b65be84af48863d011fdf3b338f13` |
-| Evaluation questions | Seven-source Search-R1 test set, 51,713 rows, converted SHA-256 `0ca2dd62c567e70a9b1d336f2f183f310b4e33a98bfcb664bcca37c326825801` |
+| Train questions | NQ + HotpotQA, 169,615 rows, converted SHA-256 `9904042da053be8e7fa275453c9221324d24aadb6f67323d040e6016da9bfaff` |
+| Evaluation questions | Seven-source Search-R1 test set, 51,713 rows, converted SHA-256 `bdcc57b4c3e88241bf7144f4e739c991c7a0ace4cd1ea26b6c602e2655445645` |
 | Retriever | `intfloat/e5-base-v2` revision `f52bf8ec8c7124536f0efb74aca902b2995e5bcd`, float16 GPU FlatIP, top 3 |
 | Wikipedia | 21,015,324 Wiki18 documents; corpus SHA-256 `43d7d3f58d01d711d95b00b70584211eea639fa46802905a4b7e11cf0617752d` |
 | E5 index | 21,015,324 x 768 inner-product vectors; SHA-256 `69c98463fdb41fc08737d88513c597725f311c44f7ba6dca4b05d8c7c658d166` |
@@ -124,6 +124,13 @@ The report includes:
 - a fixed, seed-selected qualitative sample classified as direct answer,
   useful search, irrelevant search, repeated search, post-retrieval correction,
   format failure, truncation, or wrong answer.
+
+The official `id` column is only unique inside each source: the 51,713-row test
+set has just 26,843 distinct raw IDs. All common artifacts therefore use
+`{data_source}:{id}` as `example_id`; this produces 51,713 distinct IDs while
+retaining the untouched raw `id` column. Framework adapters must carry this ID
+through metadata. Joining predictions by row order or by raw `id` alone is
+invalid.
 
 At least one common seed is mandatory. Three seeds are preferred when the
 approved compute budget permits them. A single-seed result is labeled as such

@@ -160,6 +160,77 @@ uv run python \
   --output /path/to/nemo-predictions.jsonl
 ```
 
+### Common evaluation data and framework adapters
+
+The official test file reuses IDs across its seven sources. Prepare a shared
+Parquet view that keeps every source column and row in place while adding the
+globally unique `{data_source}:{id}`, source, question, and answers under
+`extra_info`:
+
+```bash
+uv run --with pandas --with pyarrow python \
+  examples/nemo_gym/ai_search/comparison/prepare_four_way_eval_data.py \
+  --source /path/to/nq_hotpotqa_train/test.parquet \
+  --output /path/to/four-way/test.parquet \
+  --manifest /path/to/four-way/test.manifest.json
+```
+
+The converter rereads its output and rejects any change to the prompt, answer,
+row order, reward model, or other source field. On the frozen official file it
+finds 51,713 unique composite IDs but only 26,843 unique raw IDs.
+
+For the original Search-R1 fork at the frozen base revision, apply the disclosed
+export-only patch and put this comparison directory on `PYTHONPATH`:
+
+```bash
+git -C /path/to/Search-R1 apply \
+  /path/to/nemo-rl/examples/nemo_gym/ai_search/comparison/adapters/original-search-r1-validation.patch
+export PYTHONPATH="/path/to/nemo-rl/examples/nemo_gym/ai_search/comparison:${PYTHONPATH}"
+```
+
+Add this Hydra override to validation:
+
+```text
++trainer.validation_predictions_path=/path/to/original-search-r1-predictions.jsonl
+```
+
+The patch calls `original_search_r1_export.py` only after generation and native
+reward computation. It streams response-only text, loss-mask-derived generated
+and observation token counts, native reward, status, and stable identity to a
+partial file, then publishes it atomically after validation finishes.
+
+For current veRL, point `reward.custom_reward_function.path` at
+`framework_eval_adapters.py`, set its name to `verl_compute_score`, use one
+validation rollout, and enable `trainer.validation_data_dir`. The reward remains
+normalized answer EM but also returns stable evidence fields that current veRL
+includes in its validation JSONL. Convert that dump with:
+
+```bash
+uv run python \
+  examples/nemo_gym/ai_search/comparison/export_verl_predictions.py \
+  --input /path/to/verl-validation/500.jsonl \
+  --output /path/to/current-verl-predictions.jsonl
+```
+
+For slime, use the prepared Parquet as the evaluation dataset with `prompt`,
+`reward_model`, and `extra_info` as the input, label, and metadata keys. Put the
+comparison directory on `PYTHONPATH`, set
+`SEARCH_R1_COMMON_EVAL_DIR=/path/to/slime-eval`, and configure these public
+hooks:
+
+```text
+custom_rm_path: framework_eval_adapters.slime_reward
+--custom-eval-rollout-log-function-path \
+  framework_eval_adapters.slime_log_eval_rollout_data
+```
+
+The slime reward deliberately consumes `sample.response`, not
+`prompt + response`; this removes the native example's dependency on the
+demonstration `<answer>` tag. The logging hook preserves slime's normal metric
+logging and atomically writes one common record per question, including token
+counts derived from its response loss mask. All three adapters fail on missing
+or duplicate IDs instead of silently joining by row order.
+
 The clean and Nsight runs use the same model, data, retriever, and batch sizes,
 but remain separate measurements. Trace sampling and profiler state are recorded
 explicitly; the profile mode intentionally raises trace sampling to 100 percent.

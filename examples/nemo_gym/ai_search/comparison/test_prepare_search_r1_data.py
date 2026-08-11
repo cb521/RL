@@ -47,7 +47,27 @@ def test_prepare_preserves_official_prompt_and_answers(tmp_path) -> None:
         }
     ]
     assert train_row["answers"] == ["There"]
+    assert train_row["source_id"] == "nq:train-0"
     assert train_row["agent_ref"]["name"] == "ai_search_search_r1_agent"
     assert train_row["responses_create_params"]["tools"] == []
     assert manifest["train"]["rows"] == 1
     assert manifest["validation"]["rows"] == 1
+
+
+def test_prepare_namespaces_ids_that_repeat_across_sources(tmp_path) -> None:
+    source_dir = tmp_path / "source"
+    output_dir = tmp_path / "output"
+    source_dir.mkdir()
+    rows = [_source_row("row-0", "nq"), _source_row("row-0", "hotpotqa")]
+    pd.DataFrame(rows).to_parquet(source_dir / "train.parquet", index=False)
+    pd.DataFrame(rows).to_parquet(source_dir / "test.parquet", index=False)
+
+    prepare(source_dir, output_dir)
+    validation = [
+        json.loads(line)
+        for line in (output_dir / "validation.jsonl").read_text().splitlines()
+    ]
+    assert [row["source_id"] for row in validation] == [
+        "nq:row-0",
+        "hotpotqa:row-0",
+    ]

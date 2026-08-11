@@ -1,0 +1,52 @@
+diff --git a/verl/trainer/ppo/ray_trainer.py b/verl/trainer/ppo/ray_trainer.py
+index 0b62b17..fa6ef34 100644
+--- a/verl/trainer/ppo/ray_trainer.py
++++ b/verl/trainer/ppo/ray_trainer.py
+@@ -444,6 +444,18 @@ class RayPPOTrainer(object):
+         import torch
+         reward_tensor_lst = []
+         data_source_lst = []
++        prediction_path = self.config.trainer.get(
++            'validation_predictions_path', None
++        )
++        prediction_writer = None
++        if prediction_path:
++            from original_search_r1_export import (
++                OriginalSearchR1ValidationWriter,
++            )
++
++            prediction_writer = OriginalSearchR1ValidationWriter(
++                prediction_path, self.tokenizer
++            )
+ 
+         gen_config = GenerationConfig(
+             max_turns=self.config.max_turns,
+@@ -497,6 +509,12 @@ class RayPPOTrainer(object):
+ 
+                 reward_tensor_lst.append(reward_tensor)
+                 data_source_lst.append(test_batch.non_tensor_batch.get('data_source', ['unknown'] * reward_tensor.shape[0]))
++                if prediction_writer is not None:
++                    prediction_writer.write_batch(
++                        test_batch,
++                        reward_tensor,
++                        test_output_gen_batch.meta_info,
++                    )
+         else:
+             for batch_dict in self.val_dataloader:
+                 timing_raw = {}
+@@ -531,6 +549,15 @@ class RayPPOTrainer(object):
+ 
+                     reward_tensor_lst.append(reward_tensor)
+                     data_source_lst.append(test_batch.non_tensor_batch.get('data_source', ['unknown'] * reward_tensor.shape[0]))
++                    if prediction_writer is not None:
++                        prediction_writer.write_batch(
++                            test_batch,
++                            reward_tensor,
++                            final_gen_batch_output.meta_info,
++                        )
++
++        if prediction_writer is not None:
++            prediction_writer.finish()
+ 
+         reward_tensor = torch.cat([rw.sum(-1) for rw in reward_tensor_lst], dim=0).cpu()  # (batch_size,)
+         # reward_tensor = torch.cat(reward_tensor_lst, dim=0).sum(-1).cpu()  # (batch_size,)
