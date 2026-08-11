@@ -1,0 +1,8 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+- name: search_r1_text
+  _target_: verl_search_r1_adapter.build_search_r1_agent_loop
+  retriever_url: ${oc.env:SEARCH_R1_RETRIEVER_URL,http://127.0.0.1:8000/retrieve}
+  search_concurrency: 256
+  search_timeout_seconds: 10.0

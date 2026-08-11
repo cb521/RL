@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+eval:
+  defaults:
+    input_key: prompt
+    label_key: reward_model
+    metadata_key: extra_info
+    apply_chat_template: true
+    n_samples_per_eval_prompt: 1
+    temperature: 1.0
+    top_p: 1.0
+    top_k: -1
+    max_response_len: 500
+    custom_generate_function_path: slime_search_r1_adapter.generate
+    custom_rm_path: framework_eval_adapters.slime_reward
+  datasets:
+    - name: official_search_r1_test
+      path: /path/to/four-way/test.parquet

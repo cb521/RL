@@ -105,13 +105,28 @@ def verl_compute_score(
     if answers != metadata["golden_answers"]:
         raise ValueError("ground_truth disagrees with prepared golden_answers")
 
-    return {
+    result = {
         "score": _exact_match(solution_str, answers),
         "example_id": str(metadata["example_id"]),
         "data_source": data_source,
         "question": metadata["question"],
         "golden_answers": answers,
     }
+    for name in (
+        "status",
+        "search_count",
+        "invalid_actions",
+        "turn_count",
+        "natural_termination",
+        "search_errors",
+        "provider_batch_ids",
+        "generated_tokens",
+        "observation_tokens",
+        "wall_time_seconds",
+    ):
+        if name in metadata:
+            result[name] = _plain_scalar(metadata[name])
+    return result
 
 
 async def slime_reward(_: Any, sample: Any, **__: Any) -> float:

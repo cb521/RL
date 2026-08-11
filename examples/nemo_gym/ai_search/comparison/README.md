@@ -205,6 +205,28 @@ validation rollout, and enable `trainer.validation_data_dir`. The reward remains
 normalized answer EM but also returns stable evidence fields that current veRL
 includes in its validation JSONL. Convert that dump with:
 
+Put this comparison directory on `PYTHONPATH` and point veRL's Agent Loop at
+`adapters/current-verl-search-r1-agent-loop.example.yaml`:
+
+```text
+actor_rollout_ref.rollout.agent.agent_loop_config_path=/path/to/current-verl-search-r1-agent-loop.example.yaml
+actor_rollout_ref.rollout.agent.default_agent_loop=search_r1_text
+actor_rollout_ref.rollout.prompt_length=2048
+actor_rollout_ref.rollout.response_length=4096
+actor_rollout_ref.rollout.calculate_log_probs=true
+actor_rollout_ref.rollout.n=5
+actor_rollout_ref.rollout.val_kwargs.n=1
+```
+
+Set `SEARCH_R1_RETRIEVER_URL` to the shared E5 service. The adapter uses the
+current public Hydra Agent Loop factory, server manager, selected-token
+log-probabilities, response mask, rollout trace carrier, and async reward loop.
+It makes no source change to veRL. Four executable generations, the optional
+fifth answer-only generation, all token caps, stop-delimiter retention, E5
+top-3 retrieval, and provider batch IDs are fixed in code. Agent diagnostics
+flow through `tool_extra_fields` into the custom reward and therefore into the
+native validation dump.
+
 ```bash
 uv run python \
   examples/nemo_gym/ai_search/comparison/export_verl_predictions.py \
@@ -219,10 +241,19 @@ comparison directory on `PYTHONPATH`, set
 hooks:
 
 ```text
+custom_generate_function_path: slime_search_r1_adapter.generate
 custom_rm_path: framework_eval_adapters.slime_reward
 --custom-eval-rollout-log-function-path \
   framework_eval_adapters.slime_log_eval_rollout_data
 ```
+
+`adapters/slime-search-r1-eval.example.yaml` is a complete evaluation-dataset
+template. The aligned generator uses slime's own SGLang token IDs, selected
+token log probabilities, response loss mask, and trace carrier. It fixes four
+executable turns, a fifth search-disabled generation when unfinished, 500-token
+action and observation limits, the 2,048-token starting prompt, the 4,096-token
+recorded response, and E5 top-3 retrieval. Provider batch IDs join its retrieval
+spans to the shared E5 service.
 
 The slime reward deliberately consumes `sample.response`, not
 `prompt + response`; this removes the native example's dependency on the

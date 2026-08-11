@@ -52,6 +52,29 @@ def test_verl_reward_rejects_unprepared_rows() -> None:
         )
 
 
+def test_verl_reward_exports_agent_loop_diagnostics() -> None:
+    metadata = _metadata() | {
+        "status": "completed",
+        "search_count": 1,
+        "invalid_actions": 0,
+        "turn_count": 2,
+        "natural_termination": True,
+        "search_errors": 0,
+        "provider_batch_ids": ["batch-1"],
+        "generated_tokens": 42,
+        "observation_tokens": 17,
+        "wall_time_seconds": 1.25,
+    }
+    result = verl_compute_score(
+        data_source="nq",
+        solution_str="<answer>Paris</answer>",
+        ground_truth={"target": ["Paris"]},
+        extra_info=metadata,
+    )
+    for name, value in metadata.items():
+        assert result[name] == value
+
+
 def test_slime_reward_scores_response_without_prompt_workaround() -> None:
     sample = SimpleNamespace(
         response="<answer>Paris</answer>",

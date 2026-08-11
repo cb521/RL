@@ -69,6 +69,10 @@ def convert_record(value: dict[str, Any]) -> dict[str, Any]:
     for name in (
         "question",
         "search_errors",
+        "search_count",
+        "turn_count",
+        "natural_termination",
+        "provider_batch_ids",
         "generated_tokens",
         "observation_tokens",
         "wall_time_seconds",
@@ -134,4 +138,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

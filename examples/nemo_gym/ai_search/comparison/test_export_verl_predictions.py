@@ -32,6 +32,23 @@ def test_convert_verl_record_requires_stable_evidence() -> None:
     assert converted["native_reward"] == 1.0
 
 
+def test_convert_verl_record_preserves_agent_loop_diagnostics() -> None:
+    diagnostics = {
+        "status": "completed",
+        "search_count": 1,
+        "turn_count": 2,
+        "natural_termination": True,
+        "provider_batch_ids": ["batch-1"],
+        "search_errors": 0,
+        "generated_tokens": 42,
+        "observation_tokens": 17,
+        "wall_time_seconds": 1.25,
+    }
+    converted = convert_record(_dump_record() | diagnostics)
+    for name, value in diagnostics.items():
+        assert converted[name] == value
+
+
 def test_convert_verl_record_rejects_ground_truth_mismatch() -> None:
     value = _dump_record() | {"gts": {"target": ["London"]}}
     with pytest.raises(ValueError, match="disagrees"):
@@ -54,4 +71,3 @@ def test_export_verl_predictions_writes_common_jsonl(tmp_path) -> None:
     output = tmp_path / "predictions.jsonl"
     assert export_predictions([source], output) == 1
     assert json.loads(output.read_text(encoding="utf-8"))["data_source"] == "nq"
-
