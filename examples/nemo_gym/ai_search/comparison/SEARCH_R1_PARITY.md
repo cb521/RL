@@ -3,8 +3,12 @@
 This target reproduces the Search-R1 paper-v5 NQ/HotpotQA GRPO experiment in
 NeMo RL while retaining NeMo RL's trainer and NeMo Gym's service boundary. The
 reference paper is [Search-R1 v5](https://arxiv.org/html/2503.09516v5), and the
-reference implementation is Search-R1 commit
-`2d0e225716fe3ccc071c9d020f5561548fdefc54`.
+public reference implementation is frozen at upstream Search-R1 commit
+`598e61bd1d36895726d28a8d06b3a15bed19f5d3`. The controlled benchmark uses a
+disclosed local patch stack on that base: the historical NeMo-vs-Search-R1
+report used patch head `2d0e225716fe3ccc071c9d020f5561548fdefc54`, and the
+four-way launcher currently uses `5887e696542888f92c78b0bf42d6956ba8b277f5`.
+Those two patch commits are not upstream releases.
 
 The experiment hypothesis is: with the official questions, retrieval corpus,
 rollout protocol, outcome reward, and effective GRPO batches held fixed, NeMo

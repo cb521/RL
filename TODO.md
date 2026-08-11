@@ -2,8 +2,9 @@
 
 本清单记录用 NeMo RL 复现开源
 [Search-R1](https://github.com/PeterGriffinJin/Search-R1) 的当前进度。
-基线固定在 Search-R1 提交
-`2d0e225716fe3ccc071c9d020f5561548fdefc54`。详细对齐约束见
+公开上游基线固定在 Search-R1 提交
+`598e61bd1d36895726d28a8d06b3a15bed19f5d3`；用于受控测试的计时、协议对齐和
+结果导出改动作为独立补丁提交记录，不冒充上游版本。详细对齐约束见
 [`examples/nemo_gym/ai_search/comparison/SEARCH_R1_PARITY.md`](examples/nemo_gym/ai_search/comparison/SEARCH_R1_PARITY.md)。
 
 ## 已完成

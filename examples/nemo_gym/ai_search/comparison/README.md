@@ -296,13 +296,31 @@ logging and atomically writes one common record per question, including token
 counts derived from its response loss mask. All three adapters fail on missing
 or duplicate IDs instead of silently joining by row order.
 
-### Aligned current-veRL and slime launchers
+### Aligned external-framework launchers
 
 The launchers below fail closed on source revision, model revision, data hashes,
 retriever URL, and the eight-GPU requirement. `smoke` runs one 8-question x
 5-trajectory update, `performance` runs one warm-up plus three measured updates,
 and `campaign` runs the official 512-question x 5-trajectory, 500-step quality
 campaign. Only a completed campaign can be considered for the quality table.
+
+Run the original Search-R1 fork from its patched comparison checkout with:
+
+```bash
+ORIGINAL_SEARCH_R1_ROOT=/path/to/Search-R1-at-5887e69 \
+SEARCH_R1_MODEL_PATH=/path/to/models--Qwen--Qwen2.5-7B/snapshots/d149729... \
+SEARCH_R1_TRAIN_FILE=/path/to/four-way/train.parquet \
+SEARCH_R1_EVAL_FILE=/path/to/four-way/test.parquet \
+SEARCH_R1_RETRIEVER_URL=http://retriever:8000/retrieve \
+SEARCH_R1_OUTPUT_DIR=/fast/local/original-search-r1-performance \
+SEARCH_R1_RUN_MODE=performance \
+  bash examples/nemo_gym/ai_search/comparison/run_original_search_r1.sh
+```
+
+Its manifest records the untouched public base `598e61b` separately from the
+comparison patch head `5887e69`. The patch stack adds benchmark counters,
+outer-step scheduler alignment, optional final validation, and common
+validation export; it is not labeled as an upstream Search-R1 release.
 
 Run current veRL from its frozen checkout with:
 
@@ -353,12 +371,13 @@ The slime launcher uses four actor GPUs and four rollout GPUs with colocated
 lifecycle management. It keeps the conversion and initialization outside the
 measured update window, emits TensorBoard and raw rollout artifacts, and uses
 the common evaluation hook for campaign checkpoints. Set
-`SEARCH_R1_PRINT_COMMAND=1` on either launcher to validate and print the fully
-resolved command without starting Ray or allocating model memory.
+`SEARCH_R1_PRINT_COMMAND=1` on any external launcher to validate and print the
+fully resolved command without starting Ray or allocating model memory.
 
-Both launchers also write sampled common JSONL spans for model generations and
-retrieval calls. `performance` samples trajectories deterministically at 10%
-by default, while `smoke` records all trajectories and `campaign` records 1%.
+The current-veRL and slime launchers also write sampled common JSONL spans for
+model generations and retrieval calls. `performance` samples trajectories
+deterministically at 10% by default, while `smoke` records all trajectories and
+`campaign` records 1%.
 Set `SEARCH_R1_TRACE_SAMPLE_RATE` to override the rate. The retrieval span and
 the E5 service span carry the same provider batch ID, so queue, encoding,
 Faiss, document fetch, and network time can be joined without relying on wall

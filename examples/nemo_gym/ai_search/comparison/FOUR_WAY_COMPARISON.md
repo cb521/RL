@@ -20,7 +20,7 @@ explicit adapters.
 | Name | Source | Frozen revision | Classification |
 | --- | --- | --- | --- |
 | NeMo RL | This repository | Recorded in each run manifest | Strict text-action reproduction |
-| Original Search-R1 | [PeterGriffinJin/Search-R1](https://github.com/PeterGriffinJin/Search-R1) | `2d0e225716fe3ccc071c9d020f5561548fdefc54` | Paper's public veRL fork |
+| Original Search-R1 | [PeterGriffinJin/Search-R1](https://github.com/PeterGriffinJin/Search-R1) | Upstream base `598e61bd1d36895726d28a8d06b3a15bed19f5d3`; aligned patch head `5887e696542888f92c78b0bf42d6956ba8b277f5` | Paper's public veRL fork plus a disclosed comparison patch stack |
 | Current veRL | [verl-project/verl](https://github.com/verl-project/verl) | `5cfb74fa04c7f6e5d98260b8f05157c6a9402695` | Current Agent Loop plus a disclosed Search-R1 adapter |
 | slime | [THUDM/slime](https://github.com/THUDM/slime/tree/main/examples/search-r1) | `a74ae3a0ad16bd8b769d5386738e8ae3d1269d7e` | Published `Search-R1 lite` example plus a disclosed aligned recipe |
 
@@ -31,6 +31,12 @@ The guide explicitly says that the in-tree `SearchTool` was removed. The old
 example launcher was removed by veRL commit `3467d90a`, and the old tool was
 removed by commit `5a506cc5`. The aligned comparison will therefore add a
 minimal adapter on the frozen current revision and publish that diff.
+
+The original Search-R1 patch commits are comparison artifacts, not upstream
+releases. They add timing and token counters, align the outer-step scheduler
+and agent-turn boundary, export validation predictions, and make final
+validation optional for short performance runs. Each manifest records both
+the untouched upstream base and the exact patch head.
 
 ## Verified native differences
 
@@ -58,8 +64,9 @@ aligned scoreboard.
 | Dimension | Required value |
 | --- | --- |
 | Initial policy | `Qwen/Qwen2.5-7B` base at revision `d149729398750b98c0af14eb82c78cfe92750796` |
-| Train questions | NQ + HotpotQA, 169,615 rows, converted SHA-256 `9904042da053be8e7fa275453c9221324d24aadb6f67323d040e6016da9bfaff` |
-| Evaluation questions | Seven-source Search-R1 test set, 51,713 rows, converted SHA-256 `bdcc57b4c3e88241bf7144f4e739c991c7a0ace4cd1ea26b6c602e2655445645` |
+| Train questions | NQ + HotpotQA, 169,615 rows; canonical JSONL SHA-256 `9904042da053be8e7fa275453c9221324d24aadb6f67323d040e6016da9bfaff`; shared framework Parquet SHA-256 `64325c44a1ac79c53fc70ad36551e34b4d2ac0fa79cf0d3cca1c4d244bdeaa39` |
+| Evaluation questions | Seven-source Search-R1 test set, 51,713 rows; canonical JSONL SHA-256 `bdcc57b4c3e88241bf7144f4e739c991c7a0ace4cd1ea26b6c602e2655445645`; shared framework Parquet SHA-256 `7c7d10d003dce8b0c6c2c0c4177974d0767cd2a380123faf6ee51473bc8e2461` |
+| Training order | Shared deterministic Parquet row order with framework-internal training shuffle disabled; any epoch wrap must preserve that order |
 | Retriever | `intfloat/e5-base-v2` revision `f52bf8ec8c7124536f0efb74aca902b2995e5bcd`, float16 GPU FlatIP, top 3 |
 | Wikipedia | 21,015,324 Wiki18 documents; corpus SHA-256 `43d7d3f58d01d711d95b00b70584211eea639fa46802905a4b7e11cf0617752d` |
 | E5 index | 21,015,324 x 768 inner-product vectors; SHA-256 `69c98463fdb41fc08737d88513c597725f311c44f7ba6dca4b05d8c7c658d166` |
@@ -103,8 +110,10 @@ aligned scoreboard.
   before-train-step hook to hold LR constant across the ten optimizer
   mini-batches in one outer step, matching the other three schedulers; the hook
   does not change gradients or optimizer work.
-- **NeMo RL:** use `grpo_qwen2_5_7b_search_r1.yaml`; any diagnostic micro-batch
-  override is a systems preflight, not a quality result.
+- **NeMo RL:** use `grpo_qwen2_5_7b_search_r1.yaml` with training shuffle
+  disabled for the four-way aligned campaign; the paper-reproduction recipe
+  may retain its native shuffle setting. Any diagnostic micro-batch override
+  is a systems preflight, not a quality result.
 
 ## Quality and accuracy reporting
 

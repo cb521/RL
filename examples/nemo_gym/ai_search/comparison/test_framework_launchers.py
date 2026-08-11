@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Static contract tests for the aligned current-veRL and slime launchers."""
+"""Static contract tests for the aligned external-framework launchers."""
 
 import subprocess
 from pathlib import Path
@@ -10,6 +10,7 @@ import yaml
 
 
 COMPARISON_DIR = Path(__file__).parent
+ORIGINAL_SEARCH_R1_LAUNCHER = COMPARISON_DIR / "run_original_search_r1.sh"
 CURRENT_VERL_LAUNCHER = COMPARISON_DIR / "run_current_verl_search_r1.sh"
 SLIME_LAUNCHER = COMPARISON_DIR / "run_slime_search_r1.sh"
 
@@ -19,8 +20,44 @@ def _read(path: Path) -> str:
 
 
 def test_framework_launchers_have_valid_bash_syntax() -> None:
-    for launcher in (CURRENT_VERL_LAUNCHER, SLIME_LAUNCHER):
+    for launcher in (
+        ORIGINAL_SEARCH_R1_LAUNCHER,
+        CURRENT_VERL_LAUNCHER,
+        SLIME_LAUNCHER,
+    ):
         subprocess.run(["bash", "-n", str(launcher)], check=True)
+
+
+def test_original_search_r1_launcher_freezes_aligned_protocol() -> None:
+    source = _read(ORIGINAL_SEARCH_R1_LAUNCHER)
+
+    required_fragments = (
+        "expected_upstream_base=598e61bd1d36895726d28a8d06b3a15bed19f5d3",
+        "expected_patched_head=5887e696542888f92c78b0bf42d6956ba8b277f5",
+        "expected_model_revision=d149729398750b98c0af14eb82c78cfe92750796",
+        "expected_train_sha256=64325c44a1ac79c53fc70ad36551e34b4d2ac0fa79cf0d3cca1c4d244bdeaa39",
+        "expected_eval_sha256=7c7d10d003dce8b0c6c2c0c4177974d0767cd2a380123faf6ee51473bc8e2461",
+        "prompts_per_step=8\n    total_steps=4",
+        "prompts_per_step=512\n    total_steps=500",
+        "ppo_micro_batch_size=64",
+        "log_prob_micro_batch_size=128",
+        "trainer_stop_step=$((total_steps + 1))",
+        '"+actor_rollout_ref.actor.optim.lr_warmup_steps=${lr_warmup_outer_steps}"',
+        '"+actor_rollout_ref.actor.optim.betas=[0.9,0.999]"',
+        "actor_rollout_ref.actor.entropy_coeff=0.0",
+        "actor_rollout_ref.rollout.n_agent=5",
+        "data.max_response_length=500",
+        "data.max_start_length=2048",
+        "data.max_obs_length=500",
+        "data.shuffle_train_dataloader=false",
+        '"+trainer.val_at_end=${val_at_end}"',
+        '"+trainer.validation_predictions_path=${output_dir}/validation/predictions.jsonl"',
+        "max_turns=4",
+        "retriever.topk=3",
+    )
+    for fragment in required_fragments:
+        assert fragment in source
+    assert 'if [[ "${num_gpus}" != "8" ]]' in source
 
 
 def test_current_verl_launcher_freezes_aligned_protocol() -> None:
@@ -33,10 +70,15 @@ def test_current_verl_launcher_freezes_aligned_protocol() -> None:
         "expected_eval_sha256=7c7d10d003dce8b0c6c2c0c4177974d0767cd2a380123faf6ee51473bc8e2461",
         "prompts_per_step=8\n    total_steps=4",
         "prompts_per_step=512\n    total_steps=500",
+        "ppo_micro_batch_size_per_gpu=8",
+        "log_prob_micro_batch_size_per_gpu=16",
         "actor_rollout_ref.rollout.n=5",
         "data.max_prompt_length=2048",
         "data.max_response_length=4096",
         "actor_rollout_ref.actor.ppo_mini_batch_size=${ppo_mini_batch_size}",
+        "actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=${ppo_micro_batch_size_per_gpu}",
+        "actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=${log_prob_micro_batch_size_per_gpu}",
+        "actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=${log_prob_micro_batch_size_per_gpu}",
         '"actor_rollout_ref.actor.optim.betas=[0.9,0.999]"',
         "lr_schedule_horizon_outer_steps=500",
         "lr_warmup_outer_steps=142",
