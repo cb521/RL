@@ -1,0 +1,14 @@
+# Search-R1 strict protocol with the low-overhead observability backends enabled.
+defaults: grpo_qwen2_5_7b_search_r1.yaml
+
+logger:
+  wandb_enabled: false
+  swanlab_enabled: true
+  tensorboard_enabled: true
+  monitor_gpus: true
+  gpu_monitoring:
+    collection_interval: 1
+    flush_interval: 10
+  swanlab:
+    project: nemo-rl-ai-search
+    name: qwen2.5-7b-search-r1-observed

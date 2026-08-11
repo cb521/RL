@@ -110,7 +110,7 @@ AI_SEARCH_SERVER_ENV_READY=0
 if [[ -x "${AI_SEARCH_SERVER_VENV}/bin/python" ]] && \
   PYTHONPATH="${AI_SEARCH_PLUGIN_DIR}${PYTHONPATH:+:${PYTHONPATH}}" \
   "${AI_SEARCH_SERVER_VENV}/bin/python" -c \
-    'import cupy, cuvs, nemo_gym, retrieval, torch, transformers' \
+    'import cupy, cuvs, nemo_gym, prometheus_client, retrieval, torch, transformers' \
     >/dev/null 2>&1; then
   AI_SEARCH_SERVER_ENV_READY=1
 fi

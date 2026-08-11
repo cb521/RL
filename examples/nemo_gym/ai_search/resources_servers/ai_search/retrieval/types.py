@@ -44,6 +44,7 @@ class SearchTimings:
     cache_hits: int
     cache_misses: int
     batch_size: int
+    provider_batch_id: str | None = None
 
 
 @dataclass(frozen=True)

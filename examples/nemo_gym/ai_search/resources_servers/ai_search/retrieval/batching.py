@@ -5,6 +5,7 @@
 
 import asyncio
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 
 from resources_servers.ai_search.retrieval.types import SearchProvider, SearchResult
@@ -26,6 +27,8 @@ class AsyncSearchBatcher:
         provider: SearchProvider,
         max_batch_size: int,
         wait_ms: float,
+        on_queue_depth: Callable[[int], None] | None = None,
+        on_active_batch_size: Callable[[int], None] | None = None,
     ) -> None:
         self._provider = provider
         self._max_batch_size = max_batch_size
@@ -33,6 +36,16 @@ class AsyncSearchBatcher:
         self._queue: asyncio.Queue[_PendingSearch | None] = asyncio.Queue()
         self._worker_task: asyncio.Task[None] | None = None
         self._start_lock = asyncio.Lock()
+        self._on_queue_depth = on_queue_depth
+        self._on_active_batch_size = on_active_batch_size
+
+    def _report_queue_depth(self) -> None:
+        if self._on_queue_depth is not None:
+            self._on_queue_depth(self._queue.qsize())
+
+    def _report_active_batch_size(self, batch_size: int) -> None:
+        if self._on_active_batch_size is not None:
+            self._on_active_batch_size(batch_size)
 
     async def start(self) -> None:
         async with self._start_lock:
@@ -59,11 +72,13 @@ class AsyncSearchBatcher:
                 future=future,
             )
         )
+        self._report_queue_depth()
         return await future
 
     async def _run(self) -> None:
         while True:
             first = await self._queue.get()
+            self._report_queue_depth()
             if first is None:
                 self._queue.task_done()
                 return
@@ -81,11 +96,13 @@ class AsyncSearchBatcher:
                     await self._finish_batch(pending)
                     return
                 pending.append(item)
+            self._report_queue_depth()
             await self._finish_batch(pending)
 
     async def _finish_batch(self, pending: list[_PendingSearch]) -> None:
         execution_started = time.perf_counter()
         max_top_k = max(item.top_k for item in pending)
+        self._report_active_batch_size(len(pending))
         try:
             results = await asyncio.to_thread(
                 self._provider.search_batch,
@@ -110,5 +127,6 @@ class AsyncSearchBatcher:
                 if not item.future.cancelled():
                     item.future.set_exception(error)
         finally:
+            self._report_active_batch_size(0)
             for _ in pending:
                 self._queue.task_done()

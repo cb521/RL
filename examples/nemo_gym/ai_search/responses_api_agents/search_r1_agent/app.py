@@ -29,7 +29,8 @@ from nemo_gym.openai_utils import (
     NeMoGymResponseCreateParamsNonStreaming,
     NeMoGymResponseOutputMessage,
 )
-from nemo_gym.server_utils import get_response_json, raise_for_status
+from nemo_gym.server_utils import SESSION_ID_KEY, get_response_json, raise_for_status
+from resources_servers.ai_search.observability import trace_span
 
 
 _ACTION_PATTERN = re.compile(r"<(search|answer)>(.*?)</\1>", flags=re.DOTALL)
@@ -38,6 +39,20 @@ INVALID_ACTION_OBSERVATION = (
     "query between <search> and </search>. If I want to give the final answer, "
     "I should put the answer between <answer> and </answer>. Let me try again.\n"
 )
+
+
+def _request_trace_id(request: Request) -> str | None:
+    session = getattr(request, "session", None)
+    if isinstance(session, dict):
+        value = session.get(SESSION_ID_KEY)
+        if isinstance(value, (str, int)):
+            return str(value)
+    cookies = getattr(request, "cookies", None)
+    if isinstance(cookies, dict):
+        value = cookies.get(SESSION_ID_KEY)
+        if isinstance(value, (str, int)):
+            return str(value)
+    return None
 
 
 class SearchR1AgentConfig(BaseResponsesAPIAgentConfig):
@@ -206,11 +221,23 @@ class SearchR1Agent(SimpleResponsesAPIAgent):
         resources_server_cookies = request.cookies
         last_response: NeMoGymResponse | None = None
         ended = False
+        trace_id = _request_trace_id(request)
 
-        for _ in range(self.config.max_turns):
-            last_response, model_server_cookies = await self._call_model(
-                request, body, new_outputs, model_server_cookies
-            )
+        for turn_index in range(self.config.max_turns):
+            with trace_span(
+                trace_id=trace_id,
+                component="search_r1_agent",
+                operation="model_generate",
+                attributes={"turn_index": turn_index, "terminal_only": False},
+            ) as model_span:
+                last_response, model_server_cookies = await self._call_model(
+                    request, body, new_outputs, model_server_cookies
+                )
+                if last_response.usage is not None:
+                    model_span.set_attributes(
+                        input_tokens=last_response.usage.input_tokens,
+                        output_tokens=last_response.usage.output_tokens,
+                    )
             new_outputs.extend(last_response.output)
             usage = _merge_usage(usage, last_response.usage)
 
@@ -223,9 +250,19 @@ class SearchR1Agent(SimpleResponsesAPIAgent):
                 ended = True
                 break
             if action == "search":
-                observation, resources_server_cookies = await self._search(
-                    content, resources_server_cookies
-                )
+                with trace_span(
+                    trace_id=trace_id,
+                    component="search_r1_agent",
+                    operation="search_tool",
+                    attributes={
+                        "turn_index": turn_index,
+                        "query_chars": len(content),
+                    },
+                ) as search_span:
+                    observation, resources_server_cookies = await self._search(
+                        content, resources_server_cookies
+                    )
+                    search_span.set_attributes(observation_chars=len(observation))
             else:
                 observation = INVALID_ACTION_OBSERVATION
             new_outputs.append(
@@ -233,9 +270,23 @@ class SearchR1Agent(SimpleResponsesAPIAgent):
             )
 
         if not ended:
-            last_response, model_server_cookies = await self._call_model(
-                request, body, new_outputs, model_server_cookies
-            )
+            with trace_span(
+                trace_id=trace_id,
+                component="search_r1_agent",
+                operation="model_generate",
+                attributes={
+                    "turn_index": self.config.max_turns,
+                    "terminal_only": True,
+                },
+            ) as model_span:
+                last_response, model_server_cookies = await self._call_model(
+                    request, body, new_outputs, model_server_cookies
+                )
+                if last_response.usage is not None:
+                    model_span.set_attributes(
+                        input_tokens=last_response.usage.input_tokens,
+                        output_tokens=last_response.usage.output_tokens,
+                    )
             new_outputs.extend(last_response.output)
             usage = _merge_usage(usage, last_response.usage)
 
@@ -257,33 +308,49 @@ class SearchR1Agent(SimpleResponsesAPIAgent):
     ) -> SearchR1AgentVerifyResponse:
         """Seed the search session, collect one rollout, and verify its answer."""
         cookies = request.cookies
-        seed_response = await self.server_client.post(
-            server_name=self.config.resources_server.name,
-            url_path="/seed_session",
-            json=body.model_dump(),
-            cookies=cookies,
-        )
+        trace_id = _request_trace_id(request)
+        with trace_span(
+            trace_id=trace_id,
+            component="search_r1_agent",
+            operation="seed_session",
+        ):
+            seed_response = await self.server_client.post(
+                server_name=self.config.resources_server.name,
+                url_path="/seed_session",
+                json=body.model_dump(),
+                cookies=cookies,
+            )
         await raise_for_status(seed_response)
         cookies = seed_response.cookies
 
-        rollout_response = await self.server_client.post(
-            server_name=self.config.name,
-            url_path=self.url_path_for_run("/v1/responses", body),
-            json=body.responses_create_params,
-            cookies=cookies,
-        )
+        with trace_span(
+            trace_id=trace_id,
+            component="search_r1_agent",
+            operation="rollout",
+        ):
+            rollout_response = await self.server_client.post(
+                server_name=self.config.name,
+                url_path=self.url_path_for_run("/v1/responses", body),
+                json=body.responses_create_params,
+                cookies=cookies,
+            )
         await raise_for_status(rollout_response)
         cookies = rollout_response.cookies
 
         verify_request = SearchR1AgentVerifyRequest.model_validate(
             body.model_dump() | {"response": await get_response_json(rollout_response)}
         )
-        verify_response = await self.server_client.post(
-            server_name=self.config.resources_server.name,
-            url_path="/verify",
-            json=verify_request.model_dump(),
-            cookies=cookies,
-        )
+        with trace_span(
+            trace_id=trace_id,
+            component="search_r1_agent",
+            operation="verify",
+        ):
+            verify_response = await self.server_client.post(
+                server_name=self.config.resources_server.name,
+                url_path="/verify",
+                json=verify_request.model_dump(),
+                cookies=cookies,
+            )
         await raise_for_status(verify_response)
         return SearchR1AgentVerifyResponse.model_validate(
             await get_response_json(verify_response)

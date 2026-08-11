@@ -15,6 +15,7 @@
 """HTTP retrieval provider used by controlled cross-framework benchmarks."""
 
 import time
+import uuid
 from typing import Any
 
 import requests
@@ -42,10 +43,12 @@ class HttpSearchProvider:
         """Retrieve a batch and convert it to the local provider contract."""
         if not queries:
             return []
+        provider_batch_id = uuid.uuid4().hex
         started = time.perf_counter()
         response = self._session.post(
             self._url,
             json={"queries": queries, "topk": top_k, "return_scores": True},
+            headers={"X-NeMo-Search-Batch-ID": provider_batch_id},
             timeout=self._timeout_s,
         )
         response.raise_for_status()
@@ -67,6 +70,7 @@ class HttpSearchProvider:
             cache_hits=0,
             cache_misses=len(queries),
             batch_size=len(queries),
+            provider_batch_id=provider_batch_id,
         )
 
         results: list[SearchResult] = []

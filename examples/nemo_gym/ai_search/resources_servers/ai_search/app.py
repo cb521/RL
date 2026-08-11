@@ -30,6 +30,8 @@ from resources_servers.ai_search.retrieval.batching import AsyncSearchBatcher
 from resources_servers.ai_search.retrieval.config import SearchRuntimeConfig
 from resources_servers.ai_search.retrieval.engine import DenseSearchEngine
 from resources_servers.ai_search.retrieval.http import HttpSearchProvider
+from resources_servers.ai_search.observability import trace_span
+from resources_servers.ai_search.prometheus import SearchPrometheusMetrics
 from resources_servers.ai_search.retrieval.types import SearchProvider
 
 
@@ -221,6 +223,7 @@ class AISearchResourcesServer(SimpleResourcesServer):
     _provider: SearchProvider = PrivateAttr()
     _batcher: AsyncSearchBatcher = PrivateAttr()
     _session_metrics: dict[str, _SessionMetrics] = PrivateAttr(default_factory=dict)
+    _prometheus: SearchPrometheusMetrics = PrivateAttr()
 
     def model_post_init(self, __context: Any) -> None:
         super().model_post_init(__context)
@@ -238,10 +241,13 @@ class AISearchResourcesServer(SimpleResourcesServer):
             )
 
         self._provider = self._build_search_provider(runtime_config)
+        self._prometheus = SearchPrometheusMetrics(runtime_config.provider)
         self._batcher = AsyncSearchBatcher(
             provider=self._provider,
             max_batch_size=runtime_config.batch_max_size,
             wait_ms=runtime_config.batch_wait_ms,
+            on_queue_depth=self._prometheus.queue_depth.set,
+            on_active_batch_size=self._prometheus.observe_active_batch_size,
         )
         if isinstance(self._provider, DenseSearchEngine):
             stats = self._provider.stats
@@ -266,6 +272,7 @@ class AISearchResourcesServer(SimpleResourcesServer):
     def setup_webserver(self) -> FastAPI:
         app = super().setup_webserver()
         app.post("/search")(self.search)
+        app.mount("/metrics", self._prometheus.asgi_app())
 
         parent_lifespan = app.router.lifespan_context
 
@@ -287,77 +294,119 @@ class AISearchResourcesServer(SimpleResourcesServer):
     ) -> BaseSeedSessionResponse:
         del body
         self._session_metrics[request.session[SESSION_ID_KEY]] = _SessionMetrics()
+        self._prometheus.active_sessions.set(len(self._session_metrics))
         return BaseSeedSessionResponse()
 
     async def search(self, request: Request, body: SearchRequest) -> SearchResponse:
         session_id = request.session[SESSION_ID_KEY]
         metrics = self._session_metrics.setdefault(session_id, _SessionMetrics())
         runtime = self.config.search
+        with trace_span(
+            trace_id=str(session_id),
+            component="resource_server",
+            operation="search",
+            attributes={
+                "call_index": len(metrics.calls),
+                "provider": runtime.provider,
+                "query_chars": len(body.query),
+            },
+        ) as span:
+            self._prometheus.inflight.inc()
+            try:
+                if len(metrics.calls) >= runtime.max_search_calls:
+                    metrics.errors += 1
+                    self._prometheus.observe_rejection("budget_exhausted")
+                    span.set_attributes(outcome="rejected", reason="budget_exhausted")
+                    return SearchResponse(
+                        query=body.query,
+                        results=[],
+                        error=(
+                            "Search budget exhausted: at most "
+                            f"{runtime.max_search_calls} calls are allowed. "
+                            "Give the best final answer now."
+                        ),
+                    )
+                if len(body.query) > runtime.max_query_chars:
+                    metrics.errors += 1
+                    self._prometheus.observe_rejection("query_too_long")
+                    span.set_attributes(outcome="rejected", reason="query_too_long")
+                    return SearchResponse(
+                        query=body.query,
+                        results=[],
+                        error=(
+                            f"Query is too long ({len(body.query)} characters); "
+                            f"maximum is {runtime.max_query_chars}."
+                        ),
+                    )
 
-        if len(metrics.calls) >= runtime.max_search_calls:
-            metrics.errors += 1
-            return SearchResponse(
-                query=body.query,
-                results=[],
-                error=(
-                    f"Search budget exhausted: at most {runtime.max_search_calls} "
-                    "calls are allowed. Give the best final answer now."
-                ),
-            )
-        if len(body.query) > runtime.max_query_chars:
-            metrics.errors += 1
-            return SearchResponse(
-                query=body.query,
-                results=[],
-                error=(
-                    f"Query is too long ({len(body.query)} characters); "
-                    f"maximum is {runtime.max_query_chars}."
-                ),
-            )
+                top_k = body.top_k if body.top_k is not None else runtime.default_top_k
+                if top_k > runtime.max_top_k:
+                    metrics.errors += 1
+                    self._prometheus.observe_rejection("top_k_too_large")
+                    span.set_attributes(
+                        outcome="rejected", reason="top_k_too_large", top_k=top_k
+                    )
+                    return SearchResponse(
+                        query=body.query,
+                        results=[],
+                        error=f"top_k cannot exceed {runtime.max_top_k}",
+                    )
 
-        top_k = body.top_k if body.top_k is not None else runtime.default_top_k
-        if top_k > runtime.max_top_k:
-            metrics.errors += 1
-            return SearchResponse(
-                query=body.query,
-                results=[],
-                error=f"top_k cannot exceed {runtime.max_top_k}",
-            )
-
-        result = await self._batcher.search(body.query, top_k)
-        timings = result.timings
-        metrics.calls.append(
-            _SearchCallMetrics(
-                query=body.query,
-                retrieved_doc_ids=[hit.document.id for hit in result.hits],
-                queue_ms=timings.queue_ms,
-                encode_ms=timings.encode_ms,
-                index_ms=timings.index_ms,
-                fetch_ms=timings.fetch_ms,
-                total_ms=timings.total_ms,
-                cache_hits=timings.cache_hits,
-                cache_misses=timings.cache_misses,
-            )
-        )
-        return SearchResponse(
-            query=body.query,
-            results=[
-                SearchDocumentResponse(
-                    rank=hit.rank,
-                    doc_id=hit.document.id,
-                    title=hit.document.title,
-                    text=hit.document.text,
-                    score=hit.score if runtime.include_scores else None,
+                try:
+                    result = await self._batcher.search(body.query, top_k)
+                except Exception:
+                    self._prometheus.observe_provider_error()
+                    raise
+                timings = result.timings
+                self._prometheus.observe_success(timings)
+                span.set_attributes(
+                    outcome="success",
+                    top_k=top_k,
+                    hits=len(result.hits),
+                    batch_size=timings.batch_size,
+                    queue_ms=timings.queue_ms,
+                    encode_ms=timings.encode_ms,
+                    index_ms=timings.index_ms,
+                    fetch_ms=timings.fetch_ms,
+                    provider_total_ms=timings.total_ms,
+                    provider_batch_id=timings.provider_batch_id,
                 )
-                for hit in result.hits
-            ],
-        )
+                metrics.calls.append(
+                    _SearchCallMetrics(
+                        query=body.query,
+                        retrieved_doc_ids=[hit.document.id for hit in result.hits],
+                        queue_ms=timings.queue_ms,
+                        encode_ms=timings.encode_ms,
+                        index_ms=timings.index_ms,
+                        fetch_ms=timings.fetch_ms,
+                        total_ms=timings.total_ms,
+                        cache_hits=timings.cache_hits,
+                        cache_misses=timings.cache_misses,
+                    )
+                )
+                return SearchResponse(
+                    query=body.query,
+                    results=[
+                        SearchDocumentResponse(
+                            rank=hit.rank,
+                            doc_id=hit.document.id,
+                            title=hit.document.title,
+                            text=hit.document.text,
+                            score=hit.score if runtime.include_scores else None,
+                        )
+                        for hit in result.hits
+                    ],
+                )
+            finally:
+                self._prometheus.inflight.dec()
 
     async def verify(
         self, request: Request, body: AISearchVerifyRequest
     ) -> AISearchVerifyResponse:
         session_id = request.session[SESSION_ID_KEY]
         metrics = self._session_metrics.pop(session_id, _SessionMetrics())
+        self._prometheus.active_sessions.set(len(self._session_metrics))
+        self._prometheus.search_calls_per_session.observe(len(metrics.calls))
 
         output_text = _response_assistant_text(body.response)
         reward_config = self.config.search.reward

@@ -85,4 +85,9 @@ def test_http_provider_converts_search_r1_response() -> None:
     assert results[0].hits[0].document.text == "Passage"
     assert results[0].hits[0].score == 2.5
     assert results[0].timings.batch_size == 1
+    assert results[0].timings.provider_batch_id is not None
+    request_kwargs = provider._session.post.call_args.kwargs
+    assert request_kwargs["headers"]["X-NeMo-Search-Batch-ID"] == (
+        results[0].timings.provider_batch_id
+    )
     provider.close()

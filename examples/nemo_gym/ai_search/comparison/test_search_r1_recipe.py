@@ -44,7 +44,26 @@ def test_search_r1_resources_allow_remote_retriever(monkeypatch) -> None:
 
     assert isinstance(resolved_config, dict)
     assert (
-        resolved_config["ai_search"]["resources_servers"]["ai_search"]["search"]
-        ["http_url"]
+        resolved_config["ai_search"]["resources_servers"]["ai_search"]["search"][
+            "http_url"
+        ]
         == retriever_url
     )
+
+
+def test_observed_recipe_enables_local_capable_loggers() -> None:
+    repo_root = Path(__file__).parents[4]
+    recipe = (
+        repo_root
+        / "examples/nemo_gym/ai_search/grpo_qwen2_5_7b_search_r1_observed.yaml"
+    )
+
+    raw_config = load_config_with_inheritance(recipe)
+    resolved_config = OmegaConf.to_container(raw_config, resolve=True)
+
+    assert isinstance(resolved_config, dict)
+    logger = resolved_config["logger"]
+    assert logger["wandb_enabled"] is False
+    assert logger["swanlab_enabled"] is True
+    assert logger["tensorboard_enabled"] is True
+    assert logger["monitor_gpus"] is True

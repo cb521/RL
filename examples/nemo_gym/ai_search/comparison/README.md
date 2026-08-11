@@ -60,3 +60,68 @@ uv run --with pandas --with pyarrow \
 The 2018 Wikipedia corpus and E5 index are separate artifacts of roughly 70 GB
 combined. Stage them on storage visible to the retrieval service rather than in
 this repository.
+
+## Four-layer performance evidence
+
+The formal comparison uses four complementary views. They answer different
+questions and must not be collapsed into one profiler run:
+
+1. SwanLab or W&B records step-level quality, throughput, GPU utilization, and
+   trainer supply. The observed recipe enables SwanLab and TensorBoard; setting
+   `SWANLAB_MODE=local` needs no cloud account.
+2. Nsight Systems records CUDA, NCCL, and NVTX activity for a short steady-state
+   window. It is run separately because profiler overhead would bias the clean
+   end-to-end result.
+3. Prometheus records bounded-cardinality engine and retrieval-service counters,
+   gauges, and latency histograms. The local resource server and the observed
+   official E5 launcher expose `/metrics`.
+4. Sampled JSONL spans join model calls, tool calls, resource-server queueing,
+   and remote E5 batches by trajectory session and provider batch IDs.
+
+Run a low-overhead measurement with local SwanLab storage:
+
+```bash
+SWANLAB_MODE=local \
+AI_SEARCH_OBSERVABILITY_MODE=clean \
+AI_SEARCH_RUN_DIR=/fast/local/run/search-r1-clean \
+  bash examples/nemo_gym/ai_search/run_ai_search_observed.sh
+```
+
+Run Nsight only on a short, separate window (step 2 by default):
+
+```bash
+AI_SEARCH_OBSERVABILITY_MODE=profile \
+AI_SEARCH_MAX_STEPS=4 \
+  bash examples/nemo_gym/ai_search/run_ai_search_observed.sh
+```
+
+The official E5 service wrapper preserves the upstream E5 model, corpus, and
+float16 FlatIP search while loading the 21-million-vector index in bounded
+chunks. Its request, encode, index, and document-fetch metrics can be sampled
+with:
+
+```bash
+uv run python examples/nemo_gym/ai_search/comparison/collect_prometheus.py \
+  --endpoint e5=http://RETRIEVER_HOST:8000/metrics \
+  --output /path/to/run/prometheus.jsonl
+```
+
+Merge the independent evidence after a run:
+
+```bash
+uv run python examples/nemo_gym/ai_search/comparison/analyze_observability.py \
+  --console /path/to/run/console.log \
+  --trace /path/to/run/trajectory-spans.jsonl \
+  --prometheus /path/to/run/prometheus.jsonl \
+  --warmup-steps 1 \
+  --output /path/to/run/observability-summary.json
+```
+
+The clean and Nsight runs use the same model, data, retriever, and batch sizes,
+but remain separate measurements. Trace sampling and profiler state are recorded
+explicitly; the profile mode intentionally raises trace sampling to 100 percent.
+For the four-framework comparison, the same collector and analysis schema are
+used around NeMo RL, the original Search-R1 veRL fork, current veRL, and slime.
+Framework-native stages are mapped into a shared top-level critical path;
+unsupported or non-equivalent behavior is reported rather than silently
+normalized.

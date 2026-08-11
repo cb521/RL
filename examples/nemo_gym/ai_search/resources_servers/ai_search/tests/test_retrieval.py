@@ -111,7 +111,15 @@ class _RecordingProvider:
 @pytest.mark.asyncio
 async def test_async_batcher_combines_concurrent_rollouts() -> None:
     provider = _RecordingProvider()
-    batcher = AsyncSearchBatcher(provider, max_batch_size=8, wait_ms=5.0)
+    queue_depths: list[int] = []
+    active_batch_sizes: list[int] = []
+    batcher = AsyncSearchBatcher(
+        provider,
+        max_batch_size=8,
+        wait_ms=5.0,
+        on_queue_depth=queue_depths.append,
+        on_active_batch_size=active_batch_sizes.append,
+    )
 
     first, second, third = await asyncio.gather(
         batcher.search("one", top_k=1),
@@ -125,3 +133,5 @@ async def test_async_batcher_combines_concurrent_rollouts() -> None:
     assert len(second.hits) == 2
     assert len(third.hits) == 3
     assert first.timings.queue_ms >= 0.0
+    assert max(queue_depths) >= 1
+    assert active_batch_sizes == [3, 0]

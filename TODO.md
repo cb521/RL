@@ -130,6 +130,12 @@ NeMo RL 版本的 Search-R1 完整训练链路已经跑通，包括真实 E5 检
 
 ### 性能比较与阶段 breakdown
 
+- [x] 加入四层统一观测基础设施：SwanLab/W&B step 指标、短窗口 Nsight Systems、
+  Prometheus 服务指标，以及按 session/provider batch 关联的 trajectory JSONL
+  时间线；同时提供机器可读汇总脚本。
+- [ ] 在正式短预热中同时验证 SwanLab local、Prometheus 和 trajectory trace，另跑
+  独立 Nsight 窗口并量化观测开销；不能仅因工具已接入就视为完成性能分析。
+
 - [ ] 每套实现先执行独立 warm-up，再在相同 workload 上测量多个稳定 step；报告
   median、p95 和离散程度，不使用第一个包含编译/缓存的 step 代表稳态性能。
 - [ ] 把初始化单独报告：环境启动、Ray/worker 启动、模型加载、检索索引加载、

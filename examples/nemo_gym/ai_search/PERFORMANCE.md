@@ -8,6 +8,29 @@ These measurements answer two different questions:
 
 They do **not** compare model quality with published search-agent systems.
 
+## Measurement protocol for the formal Search-R1 comparison
+
+The upcoming formal run keeps low-overhead end-to-end measurement separate
+from heavy profiling. A clean run uses TensorBoard, local-mode SwanLab,
+Prometheus, one-second GPU/host sampling, and deterministically sampled
+trajectory spans. A second short run uses Nsight Systems on a steady-state step
+to identify CUDA kernels, communication, and gaps. Nsight numbers are not used
+as the clean end-to-end result.
+
+The trajectory spans cover each model call, search tool call, resource-server
+queue, and remote E5 batch. Prometheus independently records request counts,
+queue depth, active batch size, and E5 encode/index/fetch histograms. The
+postprocessor reports median and p95 latency, links shared provider batch IDs,
+and excludes a configurable number of warm-up steps. See
+[`comparison/README.md`](comparison/README.md#four-layer-performance-evidence)
+for commands and artifact names.
+
+This instrumentation is common evidence infrastructure, not a NeMo-only
+advantage. The same workload and external collectors will be used for the
+original Search-R1 veRL fork, current veRL, and slime. When a framework lacks an
+equivalent internal span, that gap is shown explicitly and the common external
+end-to-end measurement remains authoritative.
+
 ## Vector-search and RTX diagnostic setup
 
 - Date: 2026-08-08
