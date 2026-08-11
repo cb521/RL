@@ -143,6 +143,18 @@ truth. It reports normalized exact match, answer F1, per-source results,
 retrieval answer recall, format and termination rates, search/error/repetition
 statistics, and paired bootstrap confidence intervals.
 
+NeMo Gym's trajectory-collection mode preserves the complete verify result,
+including the stable source ID, source dataset, generated actions, injected
+observations, token usage, and native diagnostics. Convert that artifact before
+running the common evaluator:
+
+```bash
+uv run python \
+  examples/nemo_gym/ai_search/comparison/export_nemo_gym_predictions.py \
+  --input /path/to/logs/exp_001/trajectory_collection.jsonl \
+  --output /path/to/nemo-predictions.jsonl
+```
+
 The clean and Nsight runs use the same model, data, retriever, and batch sizes,
 but remain separate measurements. Trace sampling and profiler state are recorded
 explicitly; the profile mode intentionally raises trace sampling to 100 percent.

@@ -90,13 +90,15 @@ class AISearchRunRequest(BaseRunRequest):
     question: str
     answers: list[str] = Field(min_length=1)
     supporting_doc_ids: list[str] = Field(default_factory=list)
+    source_id: str | None = None
+    data_source: str | None = None
 
 
 class AISearchVerifyRequest(AISearchRunRequest, BaseVerifyRequest):
     """Completed rollout plus its expected answer metadata."""
 
 
-class AISearchVerifyResponse(BaseVerifyResponse):
+class AISearchVerifyResponse(AISearchVerifyRequest, BaseVerifyResponse):
     """Scalar reward, decomposed reward, and search-quality diagnostics."""
 
     reward_components: dict[str, float]

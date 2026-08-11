@@ -229,6 +229,8 @@ async def test_verifier_combines_decomposed_reward(
             question="Where was Mara Voss born?",
             answers=["Selka"],
             supporting_doc_ids=["d1"],
+            source_id="nq-1",
+            data_source="nq",
             responses_create_params=NeMoGymResponseCreateParamsNonStreaming(
                 input=[{"role": "user", "content": "Where was Mara Voss born?"}]
             ),
@@ -248,6 +250,8 @@ async def test_verifier_combines_decomposed_reward(
     assert result.exact_match == expected_exact_match
     assert result.retrieval_recall == 1.0
     assert result.num_search_calls == 1
+    assert result.source_id == "nq-1"
+    assert result.data_source == "nq"
     server._provider.close()
 
 
