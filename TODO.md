@@ -57,7 +57,7 @@ NeMo RL 版本的 Search-R1 完整训练链路已经跑通，包括真实 E5 检
   存储；当前完整 E5 资产只存在于 `ipp2-0715` 的 node-local `/tmp`。
 - [ ] 冻结正式 launcher、容器/uv 环境、模型和数据 checksum，并保存可复现
   manifest。
-- [ ] 最后核对正式 recipe：500 steps、512 prompts x 5 rollouts、每个 optimizer
+- [x] 最后核对正式 recipe：500 steps、512 prompts x 5 rollouts、每个 optimizer
   mini-batch 256 条 trajectory、8 卡切分、每 50 steps 验证、每 100 steps 保存。
 - [ ] 打开有限的响应文本或等价 token-ID 审计，定期抽查真实 query、Wikipedia
   observation、最终答案和奖励，避免只看汇总指标。
@@ -100,14 +100,15 @@ NeMo RL 版本的 Search-R1 完整训练链路已经跑通，包括真实 E5 检
 ### 比较准备
 
 - [ ] 为四套实现固定准确的仓库 URL、commit、依赖锁文件、容器和启动命令。
-- [ ] 先确认当前 veRL 版本中可运行的 Search-R1-like recipe。当前主线保留了数据、
-  reward 和接入文档，但不再内置完整 `SearchTool`；如需固定到最后一个完整 commit
-  或加入最小 adapter，必须记录并公开差异。
-- [ ] 把 slime 默认的 Qwen2.5-3B、两轮搜索、八条 rollout 等参数改成共同协议；
+- [x] 确认当前 veRL 主线不再内置完整 Search-R1 recipe，并以公开、版本固定的最小
+  Agent Loop adapter 补齐文本搜索路径；数据、reward、工具调用和导出差异均已记录。
+- [x] 把 slime 默认的 Qwen2.5-3B、两轮搜索、八条 rollout 等参数改成共同协议；
   不把它的默认 “lite” 配置直接当作论文 parity 配置。
-- [ ] 选择四套实现都支持的同一模型和精确 revision，并从完全相同的初始权重开始。
-- [ ] 固定同一训练/验证问题、prompt 文本、Wikipedia corpus、E5 index、top-k、
+- [x] 选择四套实现都支持的同一模型和精确 revision，并从完全相同的初始权重开始。
+- [x] 固定同一训练/验证问题、prompt 文本、Wikipedia corpus、E5 index、top-k、
   action budget、最大长度、采样参数、reward、GRPO group、batch 和 optimizer 配置。
+  JSONL 与 Parquet 视图已逐行验证 169,615 条训练数据和 51,713 条评测数据的有序
+  ID、完整 prompt、答案和 reward ground truth 等价。
 - [ ] 使用同一检索服务或经过逐 query 等价性验证的副本，避免把检索结果差异误认为
   RL 框架差异。
 - [ ] 固定同一 GPU 型号、GPU 数量、节点布局、精度、CPU/内存配额和持久存储；为

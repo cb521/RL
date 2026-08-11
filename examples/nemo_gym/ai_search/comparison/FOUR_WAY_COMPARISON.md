@@ -20,7 +20,7 @@ explicit adapters.
 | Name | Source | Frozen revision | Classification |
 | --- | --- | --- | --- |
 | NeMo RL | This repository | Recorded in each run manifest | Strict text-action reproduction |
-| Original Search-R1 | [PeterGriffinJin/Search-R1](https://github.com/PeterGriffinJin/Search-R1) | Upstream base `598e61bd1d36895726d28a8d06b3a15bed19f5d3`; aligned patch head `d7036db77430092ca6792b50b7d08849f7186ba8` | Paper's public veRL fork plus a disclosed comparison patch stack |
+| Original Search-R1 | [PeterGriffinJin/Search-R1](https://github.com/PeterGriffinJin/Search-R1) | Upstream base `598e61bd1d36895726d28a8d06b3a15bed19f5d3`; aligned patch head `d5b269d2f5298702e6b8c23ab2e6de435b66f37e` | Paper's public veRL fork plus a disclosed comparison patch stack |
 | Current veRL | [verl-project/verl](https://github.com/verl-project/verl) | `5cfb74fa04c7f6e5d98260b8f05157c6a9402695` | Current Agent Loop plus a disclosed Search-R1 adapter |
 | slime | [THUDM/slime](https://github.com/THUDM/slime/tree/main/examples/search-r1) | `a74ae3a0ad16bd8b769d5386738e8ae3d1269d7e` | Published `Search-R1 lite` example plus a disclosed aligned recipe |
 
@@ -66,6 +66,7 @@ aligned scoreboard.
 | Initial policy | `Qwen/Qwen2.5-7B` base at revision `d149729398750b98c0af14eb82c78cfe92750796` |
 | Train questions | NQ + HotpotQA, 169,615 rows; canonical JSONL SHA-256 `9904042da053be8e7fa275453c9221324d24aadb6f67323d040e6016da9bfaff`; shared framework Parquet SHA-256 `64325c44a1ac79c53fc70ad36551e34b4d2ac0fa79cf0d3cca1c4d244bdeaa39` |
 | Evaluation questions | Seven-source Search-R1 test set, 51,713 rows; canonical JSONL SHA-256 `bdcc57b4c3e88241bf7144f4e739c991c7a0ace4cd1ea26b6c602e2655445645`; shared framework Parquet SHA-256 `7c7d10d003dce8b0c6c2c0c4177974d0767cd2a380123faf6ee51473bc8e2461` |
+| Cross-format equivalence | Every ordered composite ID, source, question, prompt, answer list, and reward ground truth is identical between the NeMo JSONL and external-framework Parquet views; train semantic SHA-256 `fb30832270c8d5074a240d4ea1e8257d8078287523cad6f3d6bbfb6471f30839`, evaluation `65e58c1eb660b6162468483ac4489ed3fd1c06d87a83ead2d16f65337d5233d2` |
 | Training order | Shared deterministic Parquet row order with framework-internal training shuffle disabled; any epoch wrap must preserve that order |
 | Retriever | `intfloat/e5-base-v2` revision `f52bf8ec8c7124536f0efb74aca902b2995e5bcd`, float16 GPU FlatIP, top 3 |
 | Wikipedia | 21,015,324 Wiki18 documents; corpus SHA-256 `43d7d3f58d01d711d95b00b70584211eea639fa46802905a4b7e11cf0617752d` |
@@ -74,6 +75,7 @@ aligned scoreboard.
 | Action budget | Four executable generations, followed by one answer-only generation when unfinished |
 | Generated/action limits | At most 500 new tokens per generation and 4,096 tokens in the training sequence |
 | Sampling | Temperature 1.0, top-p 1.0; exact seed recorded |
+| Validation sampling | One greedy response per question (the original Search-R1 `do_sample=False` behavior) |
 | Group | Five trajectories per prompt |
 | Reward | Last `<answer>` only; normalized exact match in `{0, 1}`; no format or retrieval shaping |
 | Loss mask | All retrieved observations excluded from policy loss |

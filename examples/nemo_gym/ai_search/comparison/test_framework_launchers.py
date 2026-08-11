@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Static contract tests for the aligned external-framework launchers."""
+"""Static contract tests for the aligned four-framework launchers."""
 
 import hashlib
 import subprocess
@@ -11,6 +11,8 @@ import yaml
 
 
 COMPARISON_DIR = Path(__file__).parent
+NEMO_SEARCH_R1_LAUNCHER = COMPARISON_DIR / "run_nemo_search_r1.sh"
+NEMO_FOUR_WAY_CONFIG = COMPARISON_DIR.parent / "grpo_qwen2_5_7b_search_r1_four_way.yaml"
 ORIGINAL_SEARCH_R1_LAUNCHER = COMPARISON_DIR / "run_original_search_r1.sh"
 ORIGINAL_SEARCH_R1_PATCH = (
     COMPARISON_DIR / "adapters" / "original-search-r1-comparison.patch"
@@ -25,6 +27,7 @@ def _read(path: Path) -> str:
 
 def test_framework_launchers_have_valid_bash_syntax() -> None:
     for launcher in (
+        NEMO_SEARCH_R1_LAUNCHER,
         ORIGINAL_SEARCH_R1_LAUNCHER,
         CURRENT_VERL_LAUNCHER,
         SLIME_LAUNCHER,
@@ -32,13 +35,52 @@ def test_framework_launchers_have_valid_bash_syntax() -> None:
         subprocess.run(["bash", "-n", str(launcher)], check=True)
 
 
+def test_nemo_search_r1_launcher_freezes_aligned_protocol() -> None:
+    source = _read(NEMO_SEARCH_R1_LAUNCHER)
+    required_fragments = (
+        "expected_model_revision=d149729398750b98c0af14eb82c78cfe92750796",
+        "expected_train_sha256=9904042da053be8e7fa275453c9221324d24aadb6f67323d040e6016da9bfaff",
+        "expected_eval_sha256=bdcc57b4c3e88241bf7144f4e739c991c7a0ace4cd1ea26b6c602e2655445645",
+        "prompts_per_step=8\n    total_steps=4",
+        "train_global_batch_size=40",
+        "train_micro_batch_size=5",
+        "logprob_batch_size=1",
+        "prompts_per_step=512\n    total_steps=500",
+        "train_global_batch_size=256",
+        "train_micro_batch_size=8",
+        "logprob_batch_size=16",
+        "data.shuffle=false",
+        '"policy.model_name=${model_path}"',
+        '"policy.tokenizer.name=${model_path}"',
+        "policy.generation.temperature=1.0",
+        "policy.generation.top_p=1.0",
+        "policy.generation.val_temperature=0.0",
+        "policy.generation.val_top_p=1.0",
+        "grpo.val_num_generations_per_prompt=1",
+        '"checkpointing.enabled=${checkpoint_enabled}"',
+        "checkpointing.save_period=100",
+        'export AI_SEARCH_OBSERVABILITY_MODE="${observability_mode}"',
+        "The strict NeMo four-way launcher does not accept positional overrides.",
+    )
+    for fragment in required_fragments:
+        assert fragment in source
+    assert 'if [[ "${num_gpus}" != "8" ]]' in source
+
+    config = yaml.safe_load(NEMO_FOUR_WAY_CONFIG.read_text(encoding="utf-8"))
+    assert config["data"]["shuffle"] is False
+    assert config["policy"]["generation"] == {
+        "val_temperature": 0.0,
+        "val_top_p": 1.0,
+    }
+
+
 def test_original_search_r1_launcher_freezes_aligned_protocol() -> None:
     source = _read(ORIGINAL_SEARCH_R1_LAUNCHER)
 
     required_fragments = (
         "expected_upstream_base=598e61bd1d36895726d28a8d06b3a15bed19f5d3",
-        "expected_patched_head=d7036db77430092ca6792b50b7d08849f7186ba8",
-        "expected_patch_sha256=29f7fca4d30fe8acf61998b71414be68eb3a1fdbee0e15242e9979bf2fd372b6",
+        "expected_patched_head=d5b269d2f5298702e6b8c23ab2e6de435b66f37e",
+        "expected_patch_sha256=9fc04e2d0775258f0b69d5e812d9a99f69fd90f23e5a6f36ed981540d256f455",
         "expected_model_revision=d149729398750b98c0af14eb82c78cfe92750796",
         "expected_train_sha256=64325c44a1ac79c53fc70ad36551e34b4d2ac0fa79cf0d3cca1c4d244bdeaa39",
         "expected_eval_sha256=7c7d10d003dce8b0c6c2c0c4177974d0767cd2a380123faf6ee51473bc8e2461",
@@ -72,7 +114,7 @@ def test_original_search_r1_launcher_freezes_aligned_protocol() -> None:
 def test_original_search_r1_patch_is_frozen_and_observable() -> None:
     patch = ORIGINAL_SEARCH_R1_PATCH.read_bytes()
     assert hashlib.sha256(patch).hexdigest() == (
-        "29f7fca4d30fe8acf61998b71414be68eb3a1fdbee0e15242e9979bf2fd372b6"
+        "9fc04e2d0775258f0b69d5e812d9a99f69fd90f23e5a6f36ed981540d256f455"
     )
     source = patch.decode()
     for fragment in (
@@ -83,6 +125,8 @@ def test_original_search_r1_patch_is_frozen_and_observable() -> None:
         "validation_predictions_path",
         "lr_warmup_steps",
         "val_at_end",
+        "prometheus-client==0.21.1",
+        "tensorboard==2.17.1",
     ):
         assert fragment in source
 
@@ -117,6 +161,7 @@ def test_current_verl_launcher_freezes_aligned_protocol() -> None:
         "actor_rollout_ref.actor.kl_loss_coef=0.001",
         "actor_rollout_ref.actor.clip_ratio=0.2",
         "actor_rollout_ref.rollout.agent.default_agent_loop=search_r1_text",
+        "actor_rollout_ref.rollout.val_kwargs.temperature=0.0",
         "reward.custom_reward_function.name=verl_compute_score",
         "trainer.total_training_steps=${total_steps}",
         "SWANLAB_MODE=local",
@@ -187,3 +232,4 @@ def test_slime_eval_template_uses_runtime_common_dataset() -> None:
             "path": "${oc.env:SEARCH_R1_EVAL_FILE}",
         }
     ]
+    assert config["eval"]["defaults"]["temperature"] == 0.0

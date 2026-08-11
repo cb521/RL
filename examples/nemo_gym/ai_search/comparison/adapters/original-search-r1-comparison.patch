@@ -73,6 +73,19 @@ index 0000000000000000000000000000000000000000..d167f3e7f75e1655efe30fc0b7432e58
 +  max_turns=2 \
 +  retriever.url=http://127.0.0.1:8100/retrieve \
 +  retriever.topk=3
+diff --git a/requirements.txt b/requirements.txt
+index 5381179bae61fa7ef65e98b483544e57b0f671bb..795850b34b5d77d64ceec8c55415802a02c19b12 100644
+--- a/requirements.txt
++++ b/requirements.txt
+@@ -13,4 +13,6 @@ transformers<4.48
+ vllm<=0.6.3
+ wandb
+ IPython
+-matplotlib
+\ No newline at end of file
++matplotlib
++prometheus-client==0.21.1
++tensorboard==2.17.1
 diff --git a/search_r1/llm_agent/generation.py b/search_r1/llm_agent/generation.py
 index 6b68cb003ac3f943d45eb8d5cf48a7ebee5cd1f6..b9ce29729cbe047865789d2792dd9f4367b044ac 100644
 --- a/search_r1/llm_agent/generation.py

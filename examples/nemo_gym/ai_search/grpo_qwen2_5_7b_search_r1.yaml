@@ -74,7 +74,8 @@ policy:
     max_new_tokens: 500
     temperature: 1.0
     top_p: 1.0
-    val_temperature: 1.0
+    # The public Search-R1 validation loop sets do_sample=False.
+    val_temperature: 0.0
     val_top_p: 1.0
     vllm_cfg:
       gpu_memory_utilization: 0.6

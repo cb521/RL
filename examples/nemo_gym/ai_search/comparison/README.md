@@ -213,6 +213,22 @@ The converter rereads its output and rejects any change to the prompt, answer,
 row order, reward model, or other source field. On the frozen official file it
 finds 51,713 unique composite IDs but only 26,843 unique raw IDs.
 
+Before a four-way run, prove that the NeMo JSONL view and the external-framework
+Parquet view remain row-identical. Run this once for train and once for
+validation, and archive both output manifests:
+
+```bash
+uv run --with pyarrow python \
+  examples/nemo_gym/ai_search/comparison/verify_four_way_data_views.py \
+  --jsonl /path/to/search-r1-composite/train.jsonl \
+  --parquet /path/to/four-way/train.parquet \
+  --output /path/to/evidence/train-view-equivalence.json
+```
+
+The verifier compares ordered composite IDs, sources, questions, complete
+prompt messages, answer lists, and reward ground truth. The frozen full views
+pass for all 169,615 training rows and 51,713 evaluation rows.
+
 For the original Search-R1 fork at the frozen base revision, apply and commit
 the disclosed comparison diff, then put this comparison directory on
 `PYTHONPATH`:
@@ -302,7 +318,7 @@ logging and atomically writes one common record per question, including token
 counts derived from its response loss mask. All three adapters fail on missing
 or duplicate IDs instead of silently joining by row order.
 
-### Aligned external-framework launchers
+### Aligned framework launchers
 
 The launchers below fail closed on source revision, model revision, data hashes,
 retriever URL, and the eight-GPU requirement. `smoke` runs one 8-question x
@@ -310,10 +326,28 @@ retriever URL, and the eight-GPU requirement. `smoke` runs one 8-question x
 and `campaign` runs the official 512-question x 5-trajectory, 500-step quality
 campaign. Only a completed campaign can be considered for the quality table.
 
+Run NeMo RL with its composite JSONL view and strict four-way overlay:
+
+```bash
+SEARCH_R1_MODEL_PATH=/path/to/models--Qwen--Qwen2.5-7B/snapshots/d149729... \
+SEARCH_R1_NEMO_TRAIN_FILE=/path/to/search-r1-composite/train.jsonl \
+SEARCH_R1_NEMO_EVAL_FILE=/path/to/search-r1-composite/validation.jsonl \
+SEARCH_R1_RETRIEVER_URL=http://retriever:8000/retrieve \
+SEARCH_R1_OUTPUT_DIR=/fast/local/nemo-performance \
+SEARCH_R1_RUN_MODE=performance \
+  bash examples/nemo_gym/ai_search/comparison/run_nemo_search_r1.sh
+```
+
+This launcher fixes the source order, model snapshot, optimizer workload,
+greedy validation sampling, and all hashes. It routes performance runs through
+the four-layer observed launcher; use `SEARCH_R1_OBSERVABILITY_MODE=baseline`
+for the paired instrumentation-off measurement and `profile` only for the
+separate Nsight run.
+
 Run the original Search-R1 fork from its patched comparison checkout with:
 
 ```bash
-ORIGINAL_SEARCH_R1_ROOT=/path/to/Search-R1-at-d7036db \
+ORIGINAL_SEARCH_R1_ROOT=/path/to/Search-R1-at-d5b269d \
 SEARCH_R1_MODEL_PATH=/path/to/models--Qwen--Qwen2.5-7B/snapshots/d149729... \
 SEARCH_R1_TRAIN_FILE=/path/to/four-way/train.parquet \
 SEARCH_R1_EVAL_FILE=/path/to/four-way/test.parquet \
@@ -324,7 +358,7 @@ SEARCH_R1_RUN_MODE=performance \
 ```
 
 Its manifest records the untouched public base `598e61b` separately from the
-comparison patch head `d7036db`. The patch stack adds benchmark counters,
+comparison patch head `d5b269d`. The patch stack adds benchmark counters,
 outer-step scheduler alignment, optional final validation, and common
 validation export. It also writes sampled generation/retrieval spans, passes a
 provider-batch ID to E5, mirrors reduced metrics to raw JSONL and TensorBoard,
