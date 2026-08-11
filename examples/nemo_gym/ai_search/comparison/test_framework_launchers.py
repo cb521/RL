@@ -77,6 +77,7 @@ def test_nemo_search_r1_launcher_freezes_aligned_protocol() -> None:
         'export AI_SEARCH_OBSERVABILITY_MODE="${observability_mode}"',
         'trace_sample_rate="${SEARCH_R1_TRACE_SAMPLE_RATE:-1.0}"',
         "policy-and-vllm-worker-processes-step-2",
+        'health_url="${retriever_url%/retrieve}/healthz"',
         "The strict NeMo four-way launcher does not accept positional overrides.",
     )
     for fragment in required_fragments:

@@ -211,7 +211,7 @@ if [[ "${SEARCH_R1_PRINT_COMMAND:-0}" == "1" ]]; then
   exit 0
 fi
 
-health_url="${retriever_url%/retrieve}/health"
+health_url="${retriever_url%/retrieve}/healthz"
 if ! curl --fail --silent --show-error "${health_url}" >/dev/null; then
   echo "The shared E5 retriever is not healthy at ${health_url}." >&2
   exit 1
