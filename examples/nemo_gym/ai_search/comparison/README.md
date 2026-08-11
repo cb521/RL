@@ -442,6 +442,25 @@ PYTHONPATH=/path/to/Megatron-LM python tools/convert_hf_to_torch_dist.py \
   --save /fast/local/Qwen2.5-7B_torch_dist
 ```
 
+For a result-bearing comparison, use the frozen preparer in the pinned slime
+container instead of treating the conversion as trusted input. It converts to
+a staging directory, converts the Megatron checkpoint back to Safetensors, and
+requires every tensor's name, dtype, shape, and bytes to match the frozen Hugging
+Face snapshot before atomically publishing the checkpoint:
+
+```bash
+SLIME_ROOT=/path/to/slime-at-3c30f8b \
+SLIME_MEGATRON_ROOT=/root/Megatron-LM \
+SEARCH_R1_MODEL_PATH=/path/to/models--Qwen--Qwen2.5-7B/snapshots/d149729... \
+SEARCH_R1_SLIME_REF_LOAD=/fast/local/Qwen2.5-7B_torch_dist \
+SEARCH_R1_SLIME_IMAGE='slimerl/slime@sha256:f7f8ee9...' \
+  bash examples/nemo_gym/ai_search/comparison/prepare_slime_search_r1_checkpoint.sh
+```
+
+The preparer retains the exact equivalence report and per-file checkpoint
+hashes, removes only its own temporary round-trip copy, and marks all conversion
+work as outside the timed benchmark.
+
 Then launch slime with:
 
 ```bash

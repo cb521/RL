@@ -28,6 +28,7 @@ ORIGINAL_SEARCH_R1_RUNTIME_PREP = (
 )
 CURRENT_VERL_LAUNCHER = COMPARISON_DIR / "run_current_verl_search_r1.sh"
 SLIME_LAUNCHER = COMPARISON_DIR / "run_slime_search_r1.sh"
+SLIME_CHECKPOINT_PREP = COMPARISON_DIR / "prepare_slime_search_r1_checkpoint.sh"
 SLIME_SEARCH_R1_PATCH = (
     COMPARISON_DIR / "adapters" / "slime-search-r1-comparison.patch"
 )
@@ -44,6 +45,7 @@ def test_framework_launchers_have_valid_bash_syntax() -> None:
         ORIGINAL_SEARCH_R1_RUNTIME_PREP,
         CURRENT_VERL_LAUNCHER,
         SLIME_LAUNCHER,
+        SLIME_CHECKPOINT_PREP,
     ):
         subprocess.run(["bash", "-n", str(launcher)], check=True)
 
@@ -309,6 +311,22 @@ def test_slime_profile_patch_is_frozen_and_measurement_only() -> None:
         "start_nsys_profile",
         "stop_nsys_profile",
         "search_r1_outer_step",
+    ):
+        assert fragment in source
+
+
+def test_slime_checkpoint_conversion_requires_exact_roundtrip() -> None:
+    source = _read(SLIME_CHECKPOINT_PREP)
+    for fragment in (
+        "expected_slime_patched_head=3c30f8b4954e40f7baa0073d83a62134c1aec82b",
+        "slimerl/slime@sha256:f7f8ee9acde9645a6e88f0c703597e69a58d2892abff56071630c88f23d5068f",
+        "--ckpt-format torch_dist",
+        "convert_torch_dist_to_hf.py",
+        "verify_safetensors_equivalence.py",
+        "safetensors-equivalence.json",
+        "checkpoint-files.sha256",
+        "timed_benchmark_work",
+        "SEARCH_R1_SLIME_CHECKPOINT_PREP_PASS",
     ):
         assert fragment in source
 
