@@ -8,8 +8,23 @@ AI_SEARCH_PLUGIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 AI_SEARCH_OBSERVABILITY_MODE="${AI_SEARCH_OBSERVABILITY_MODE:-clean}"
 AI_SEARCH_RUN_DIR="${AI_SEARCH_RUN_DIR:-/tmp/nemo-rl-ai-search/runs/grpo-ai-search-observed}"
 AI_SEARCH_OBSERVABILITY_DIR="${AI_SEARCH_OBSERVABILITY_DIR:-${AI_SEARCH_RUN_DIR}/observability}"
+AI_SEARCH_LAUNCH_OVERRIDES=()
 
 case "${AI_SEARCH_OBSERVABILITY_MODE}" in
+  baseline)
+    if [[ -n "${NRL_NSYS_WORKER_PATTERNS:-}" || -n "${NRL_NSYS_PROFILE_STEP_RANGE:-}" ]]; then
+      echo 'Baseline measurement mode refuses Nsight settings; use AI_SEARCH_OBSERVABILITY_MODE=profile.' >&2
+      exit 1
+    fi
+    # Keep the same observed recipe and native TensorBoard metrics while
+    # disabling the optional low-overhead layers for an on/off overhead pair.
+    AI_SEARCH_LAUNCH_OVERRIDES+=(
+      logger.swanlab_enabled=false
+      logger.monitor_gpus=false
+    )
+    unset AI_SEARCH_TRACE_PATH AI_SEARCH_TRACE_SAMPLE_RATE
+    unset SWANLAB_MODE SWANLAB_LOGDIR
+    ;;
   clean)
     if [[ -n "${NRL_NSYS_WORKER_PATTERNS:-}" || -n "${NRL_NSYS_PROFILE_STEP_RANGE:-}" ]]; then
       echo 'Clean measurement mode refuses Nsight settings; use AI_SEARCH_OBSERVABILITY_MODE=profile.' >&2
@@ -31,32 +46,33 @@ case "${AI_SEARCH_OBSERVABILITY_MODE}" in
     export NRL_NSYS_PROFILE_STEP_RANGE NRL_NSYS_EXTRA_OPTIONS
     ;;
   *)
-    echo "AI_SEARCH_OBSERVABILITY_MODE must be clean or profile, not ${AI_SEARCH_OBSERVABILITY_MODE}." >&2
+    echo "AI_SEARCH_OBSERVABILITY_MODE must be baseline, clean, or profile, not ${AI_SEARCH_OBSERVABILITY_MODE}." >&2
     exit 1
     ;;
 esac
 
-mkdir -p \
-  "${AI_SEARCH_OBSERVABILITY_DIR}" \
-  "${AI_SEARCH_OBSERVABILITY_DIR}/swanlab" \
-  "${AI_SEARCH_RUN_DIR}"
+mkdir -p "${AI_SEARCH_OBSERVABILITY_DIR}" "${AI_SEARCH_RUN_DIR}"
 
 export AI_SEARCH_RUN_DIR
 export AI_SEARCH_CONFIG="${AI_SEARCH_CONFIG:-${AI_SEARCH_PLUGIN_DIR}/grpo_qwen2_5_7b_search_r1_observed.yaml}"
-export AI_SEARCH_TRACE_PATH="${AI_SEARCH_TRACE_PATH:-${AI_SEARCH_OBSERVABILITY_DIR}/trajectory-spans.jsonl}"
-export AI_SEARCH_TRACE_SAMPLE_RATE
-export SWANLAB_MODE="${SWANLAB_MODE:-local}"
-export SWANLAB_LOGDIR="${SWANLAB_LOGDIR:-${AI_SEARCH_OBSERVABILITY_DIR}/swanlab}"
+if [[ "${AI_SEARCH_OBSERVABILITY_MODE}" != "baseline" ]]; then
+  mkdir -p "${AI_SEARCH_OBSERVABILITY_DIR}/swanlab"
+  export AI_SEARCH_TRACE_PATH="${AI_SEARCH_TRACE_PATH:-${AI_SEARCH_OBSERVABILITY_DIR}/trajectory-spans.jsonl}"
+  export AI_SEARCH_TRACE_SAMPLE_RATE
+  export SWANLAB_MODE="${SWANLAB_MODE:-local}"
+  export SWANLAB_LOGDIR="${SWANLAB_LOGDIR:-${AI_SEARCH_OBSERVABILITY_DIR}/swanlab}"
+fi
 
 {
   printf 'mode=%s\n' "${AI_SEARCH_OBSERVABILITY_MODE}"
   printf 'started_at=%s\n' "$(date --iso-8601=seconds)"
-  printf 'trace_path=%s\n' "${AI_SEARCH_TRACE_PATH}"
-  printf 'trace_sample_rate=%s\n' "${AI_SEARCH_TRACE_SAMPLE_RATE}"
-  printf 'swanlab_mode=%s\n' "${SWANLAB_MODE}"
-  printf 'swanlab_logdir=%s\n' "${SWANLAB_LOGDIR}"
+  printf 'trace_path=%s\n' "${AI_SEARCH_TRACE_PATH:-disabled}"
+  printf 'trace_sample_rate=%s\n' "${AI_SEARCH_TRACE_SAMPLE_RATE:-disabled}"
+  printf 'swanlab_mode=%s\n' "${SWANLAB_MODE:-disabled}"
+  printf 'swanlab_logdir=%s\n' "${SWANLAB_LOGDIR:-disabled}"
   printf 'nsys_worker_patterns=%s\n' "${NRL_NSYS_WORKER_PATTERNS:-disabled}"
   printf 'nsys_step_range=%s\n' "${NRL_NSYS_PROFILE_STEP_RANGE:-disabled}"
 } > "${AI_SEARCH_OBSERVABILITY_DIR}/manifest.txt"
 
-exec bash "${AI_SEARCH_PLUGIN_DIR}/run_ai_search.sh" "$@"
+exec bash "${AI_SEARCH_PLUGIN_DIR}/run_ai_search.sh" \
+  "$@" "${AI_SEARCH_LAUNCH_OVERRIDES[@]}"

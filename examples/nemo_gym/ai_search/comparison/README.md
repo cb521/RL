@@ -97,6 +97,23 @@ AI_SEARCH_RUN_DIR=/fast/local/run/search-r1-clean \
   bash examples/nemo_gym/ai_search/run_ai_search_observed.sh
 ```
 
+Measure the low-overhead observer cost with an otherwise identical baseline.
+This mode retains the recipe's native TensorBoard logging but disables local
+SwanLab, the Ray GPU monitor, and trajectory spans:
+
+```bash
+AI_SEARCH_OBSERVABILITY_MODE=baseline \
+AI_SEARCH_RUN_DIR=/fast/local/run/search-r1-baseline \
+  bash examples/nemo_gym/ai_search/run_ai_search_observed.sh
+```
+
+The surrounding benchmark launcher must also disable Prometheus polling and
+its one-second resource sampler for the baseline run. Compare the same steady
+steps, generated/trained token counts, and completed trajectories; report both
+the absolute difference and `(clean / baseline - 1) * 100` percent overhead.
+The baseline is only an instrumentation-control row, not a replacement for the
+four-layer clean evidence.
+
 Run Nsight only on a short, separate window (step 2 by default):
 
 ```bash
