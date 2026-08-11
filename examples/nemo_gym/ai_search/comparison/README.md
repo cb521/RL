@@ -123,6 +123,26 @@ uv run python examples/nemo_gym/ai_search/comparison/analyze_observability.py \
   --output /path/to/run/observability-summary.json
 ```
 
+Framework adapters export final evaluation predictions to a common JSONL
+schema with `example_id`, `data_source`, `golden_answers`, `response`, and
+`status`. Token counts, wall time, search errors, and invalid actions are
+optional evidence fields. Recompute quality and paired uncertainty instead of
+comparing framework-native reward logs:
+
+```bash
+uv run python examples/nemo_gym/ai_search/comparison/evaluate_search_r1.py \
+  --predictions nemo=/path/to/nemo-predictions.jsonl \
+  --predictions original_search_r1=/path/to/search-r1-predictions.jsonl \
+  --predictions current_verl=/path/to/verl-predictions.jsonl \
+  --predictions slime=/path/to/slime-predictions.jsonl \
+  --output /path/to/four-way-quality.json
+```
+
+By default, the evaluator rejects missing or different example IDs and ground
+truth. It reports normalized exact match, answer F1, per-source results,
+retrieval answer recall, format and termination rates, search/error/repetition
+statistics, and paired bootstrap confidence intervals.
+
 The clean and Nsight runs use the same model, data, retriever, and batch sizes,
 but remain separate measurements. Trace sampling and profiler state are recorded
 explicitly; the profile mode intentionally raises trace sampling to 100 percent.
