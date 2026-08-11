@@ -67,6 +67,11 @@ def test_analyze_prometheus_calculates_interval_deltas(tmp_path) -> None:
                         "value": 2.0,
                     },
                     {
+                        "name": "search_r1_e5_requests_created",
+                        "labels": {"outcome": "success"},
+                        "value": 1_000_000_000.0,
+                    },
+                    {
                         "name": "search_r1_e5_stage_seconds_sum",
                         "labels": {"stage": "encode"},
                         "value": 1.0,
@@ -110,6 +115,7 @@ def test_analyze_prometheus_calculates_interval_deltas(tmp_path) -> None:
         "observations": 3.0,
         "mean": 0.5,
     }
+    assert not any("_created" in key for key in report["gauge_summaries"])
     assert report["duration_seconds"] == 2.0
 
 

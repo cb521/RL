@@ -45,7 +45,7 @@ def parse_metrics(text: str, include: Pattern[str]) -> list[dict[str, Any]]:
     samples: list[dict[str, Any]] = []
     for family in text_string_to_metric_families(text):
         for sample in family.samples:
-            if include.search(sample.name) is None:
+            if sample.name.endswith("_created") or include.search(sample.name) is None:
                 continue
             value = float(sample.value)
             samples.append(

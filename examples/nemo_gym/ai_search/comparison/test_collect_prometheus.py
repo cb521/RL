@@ -26,6 +26,9 @@ def test_parse_metrics_filters_names_and_preserves_labels() -> None:
 # HELP search_r1_e5_requests_total requests
 # TYPE search_r1_e5_requests_total counter
 search_r1_e5_requests_total{outcome="success"} 7
+# HELP search_r1_e5_requests_created creation timestamp
+# TYPE search_r1_e5_requests_created gauge
+search_r1_e5_requests_created{outcome="success"} 1234567890
 # HELP unrelated_total ignored
 # TYPE unrelated_total counter
 unrelated_total 99

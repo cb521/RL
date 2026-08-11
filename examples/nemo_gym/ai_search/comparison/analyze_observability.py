@@ -162,6 +162,8 @@ def analyze_prometheus(paths: list[Path]) -> dict[str, Any]:
             if not isinstance(sample, dict) or sample.get("value") is None:
                 continue
             name = str(sample["name"])
+            if name.endswith("_created"):
+                continue
             labels = sample.get("labels", {})
             if not isinstance(labels, dict):
                 labels = {}
