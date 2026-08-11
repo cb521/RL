@@ -101,6 +101,11 @@ AI_SEARCH_MAX_STEPS=4 \
   bash examples/nemo_gym/ai_search/run_ai_search_observed.sh
 ```
 
+Profile mode requires the `nsys` CLI on `PATH`. Point `NSYS_TMPDIR` at
+node-local storage, and record the CLI version plus package checksum in the run
+manifest; profile data and SQLite conversion scratch can be large and should
+not use a network-mounted temporary directory.
+
 The official E5 service wrapper preserves the upstream E5 model, corpus, and
 float16 FlatIP search while loading the 21-million-vector index in bounded
 chunks. Its request, encode, index, and document-fetch metrics can be sampled
@@ -158,6 +163,19 @@ uv run python \
 The clean and Nsight runs use the same model, data, retriever, and batch sizes,
 but remain separate measurements. Trace sampling and profiler state are recorded
 explicitly; the profile mode intentionally raises trace sampling to 100 percent.
+Summarize the per-worker Nsight reports without adding overlapping CUDA and
+NVTX durations to the end-to-end critical path:
+
+```bash
+uv run python examples/nemo_gym/ai_search/comparison/analyze_nsys.py \
+  --input /path/to/dtensor_policy_worker_2:3_100.nsys-rep \
+  --input /path/to/vllm_generation_worker_2:3_101.nsys-rep \
+  --output /path/to/nsight-summary.json
+```
+
+The summary preserves report-local CUDA API, kernel, memory-operation,
+launch-queue, and NVTX rankings. Its percentages are deliberately scoped to
+each report because workers and nested ranges overlap in wall-clock time.
 For the four-framework comparison, the same collector and analysis schema are
 used around NeMo RL, the original Search-R1 veRL fork, current veRL, and slime.
 Framework-native stages are mapped into a shared top-level critical path;
