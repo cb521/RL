@@ -442,6 +442,9 @@ class SwanlabLogger(LoggerInterface):
             cfg (SwanlabConfig): Configuration for the Swanlab run (e.g., project and name).
             log_dir (Optional[str]): Optional offline log directory passed to Swanlab's init.
         """
+        # Local SwanLab persists through SQLite and is not safe for concurrent
+        # writes from the training loop and the GPU-monitoring thread.
+        self._write_lock = threading.RLock()
         self.run = swanlab.init(**cfg, logdir=log_dir)
         print(
             f"Initialized SwanlabLogger for project {cfg.get('project')}, run {cfg.get('name')} (with offline logdir={log_dir})"
@@ -469,7 +472,8 @@ class SwanlabLogger(LoggerInterface):
                 for k, v in metrics.items()
             }
 
-        self.run.log(metrics, step=step)
+        with self._write_lock:
+            self.run.log(metrics, step=step)
 
     def log_hyperparams(self, params: Mapping[str, Any]) -> None:
         """Update the Swanlab run configuration with the provided hyperparameters.
@@ -477,7 +481,8 @@ class SwanlabLogger(LoggerInterface):
         Parameters:
             params (Mapping[str, Any]): Mapping of hyperparameter names to values to store in the run configuration.
         """
-        self.run.config.update(params, allow_val_change=True)
+        with self._write_lock:
+            self.run.config.update(params, allow_val_change=True)
 
     def log_plot(self, figure: plt.Figure, step: int, name: str) -> None:
         """Log a plot to swanlab.
@@ -486,7 +491,8 @@ class SwanlabLogger(LoggerInterface):
             figure: Matplotlib figure to log
             step: Global step value
         """
-        self.run.log({name: swanlab.Image(figure)}, step=step)
+        with self._write_lock:
+            self.run.log({name: swanlab.Image(figure)}, step=step)
 
     def log_histogram(self, histogram: list[Any], step: int, name: str) -> None:
         """Log histogram metrics to swanlab."""

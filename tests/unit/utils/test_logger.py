@@ -15,6 +15,8 @@
 import logging
 import shutil
 import tempfile
+import threading
+import time
 from unittest.mock import MagicMock, call, patch
 
 import pytest
@@ -563,6 +565,44 @@ class TestSwanlabLogger:
         # Check that config.update was called with params
         mock_run = mock_swanlab.init.return_value
         mock_run.config.update.assert_called_once_with(params, allow_val_change=True)
+
+    @patch("nemo_rl.utils.logger.swanlab")
+    def test_concurrent_writes_are_serialized(self, mock_swanlab):
+        """SwanLab local storage must not receive overlapping SQLite writes."""
+        logger = SwanlabLogger({})
+        state_lock = threading.Lock()
+        active_writes = 0
+        peak_writes = 0
+
+        def record_write(*args, **kwargs):
+            del args, kwargs
+            nonlocal active_writes, peak_writes
+            with state_lock:
+                active_writes += 1
+                peak_writes = max(peak_writes, active_writes)
+            time.sleep(0.01)
+            with state_lock:
+                active_writes -= 1
+
+        mock_run = mock_swanlab.init.return_value
+        mock_run.log.side_effect = record_write
+        mock_run.config.update.side_effect = record_write
+        threads = [
+            threading.Thread(
+                target=(
+                    (lambda: logger.log_metrics({"loss": 1.0}, step=1))
+                    if index % 2 == 0
+                    else (lambda: logger.log_hyperparams({"seed": 42}))
+                )
+            )
+            for index in range(8)
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        assert peak_writes == 1
 
 
 class TestMLflowLogger:
