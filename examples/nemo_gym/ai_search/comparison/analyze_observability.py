@@ -21,6 +21,12 @@ _TIMING_PATTERN = re.compile(
     r"^\s*•\s+(.+?):\s+([0-9]+(?:\.[0-9]+)?)s(?:\s+\([^)]+\))?\s*$"
 )
 _THROUGHPUT_PATTERN = re.compile(r"^\s*-\s+(.+?):\s+([0-9]+(?:\.[0-9]+)?)\s*$")
+_RESULT_PATTERN = re.compile(
+    r"^\s*•\s+(.+?):\s+([-+]?[0-9]+(?:\.[0-9]+)?(?:[eE][-+]?[0-9]+)?)\s*$"
+)
+_ROLLOUT_PATTERN = re.compile(
+    r"Collecting rollouts:\s+100%.*?\|\s*([0-9]+)/([0-9]+)(?:\s|$)"
+)
 
 
 def _percentile(values: list[float], percentile: float) -> float:
@@ -301,6 +307,7 @@ def parse_training_console(path: Path, warmup_steps: int) -> dict[str, Any]:
                     "max_steps": int(step_match.group(2)),
                     "timing_seconds": {},
                     "throughput": {},
+                    "results": {},
                 }
                 in_performance_metrics = False
                 continue
@@ -308,6 +315,11 @@ def parse_training_console(path: Path, warmup_steps: int) -> dict[str, Any]:
                 continue
             if "Performance Metrics:" in line:
                 in_performance_metrics = True
+                continue
+            rollout_match = _ROLLOUT_PATTERN.search(line)
+            if rollout_match:
+                current["completed_trajectories"] = int(rollout_match.group(1))
+                current["requested_trajectories"] = int(rollout_match.group(2))
                 continue
             timing_match = _TIMING_PATTERN.match(line)
             if timing_match:
@@ -319,6 +331,11 @@ def parse_training_console(path: Path, warmup_steps: int) -> dict[str, Any]:
                 if throughput_match:
                     name = throughput_match.group(1).strip()
                     current["throughput"][name] = float(throughput_match.group(2))
+                    continue
+            result_match = _RESULT_PATTERN.match(line)
+            if result_match:
+                name = result_match.group(1).strip().lower().replace(" ", "_")
+                current["results"][name] = float(result_match.group(2))
 
     if current is not None:
         steps.append(current)
@@ -329,6 +346,8 @@ def parse_training_console(path: Path, warmup_steps: int) -> dict[str, Any]:
     throughput_names = sorted(
         {name for step in steady_steps for name in step["throughput"]}
     )
+    result_names = sorted({name for step in steady_steps for name in step["results"]})
+    work_names = ("completed_trajectories", "requested_trajectories")
     return {
         "step_count": len(steps),
         "warmup_steps_excluded": warmup_steps,
@@ -348,6 +367,18 @@ def parse_training_console(path: Path, warmup_steps: int) -> dict[str, Any]:
                 if name in step["throughput"]
             )
             for name in throughput_names
+        },
+        "results": {
+            name: summarize(
+                step["results"][name]
+                for step in steady_steps
+                if name in step["results"]
+            )
+            for name in result_names
+        },
+        "work": {
+            name: summarize(step[name] for step in steady_steps if name in step)
+            for name in work_names
         },
         "steps": steps,
     }

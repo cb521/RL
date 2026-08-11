@@ -114,6 +114,19 @@ the absolute difference and `(clean / baseline - 1) * 100` percent overhead.
 The baseline is only an instrumentation-control row, not a replacement for the
 four-layer clean evidence.
 
+After producing both `observability.json` files, build the paired report with:
+
+```bash
+python examples/nemo_gym/ai_search/comparison/compare_observability_overhead.py \
+  --baseline /fast/local/run/search-r1-baseline/observability.json \
+  --clean /fast/local/run/search-r1-clean/observability.json \
+  --output /fast/local/run/search-r1-observability-overhead.json
+```
+
+The comparison fails if measured step IDs or completed trajectory counts differ.
+It retains per-step timing, throughput, result, and actual-work deltas so a
+token-length change cannot be mistaken for instrumentation overhead.
+
 Run Nsight only on a short, separate window (step 2 by default):
 
 ```bash

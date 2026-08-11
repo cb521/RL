@@ -181,12 +181,20 @@ def test_parse_training_console_excludes_warmup(tmp_path) -> None:
     console.write_text(
         """
 ========================= Step 1/2 =========================
+Collecting rollouts: 100%|██████████| 40/40 [00:10<00:00, 4.00it/s]
+📊 Training Results:
+  • Avg Reward: 0.10
+  • Mean Generation Length: 200.00
 ⏱️  Timing:
   • Total step time: 10.00s
   • generation: 4.00s (40.0%)
 🔍 Performance Metrics:
     - E2E (Tokens/sec/gpu): 20.00
 ========================= Step 2/2 =========================
+Collecting rollouts: 100%|██████████| 40/40 [00:08<00:00, 5.00it/s]
+📊 Training Results:
+  • Avg Reward: 0.20
+  • Mean Generation Length: 250.00
 ⏱️  Timing:
   • Total step time: 8.00s
   • generation: 3.00s (37.5%)
@@ -201,3 +209,7 @@ def test_parse_training_console_excludes_warmup(tmp_path) -> None:
     assert report["steady_step_count"] == 1
     assert report["timing_seconds"]["total_step_time"]["mean"] == 8.0
     assert report["throughput"]["E2E (Tokens/sec/gpu)"]["mean"] == 25.0
+    assert report["results"]["avg_reward"]["mean"] == 0.2
+    assert report["results"]["mean_generation_length"]["mean"] == 250.0
+    assert report["work"]["completed_trajectories"]["mean"] == 40.0
+    assert report["steps"][1]["requested_trajectories"] == 40
