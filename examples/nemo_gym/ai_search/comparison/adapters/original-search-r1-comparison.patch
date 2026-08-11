@@ -373,8 +373,68 @@ index 6b68cb003ac3f943d45eb8d5cf48a7ebee5cd1f6..b9ce29729cbe047865789d2792dd9f43
  
      def _passages2string(self, retrieval_result):
          format_reference = ''
+diff --git a/verl/trainer/main_ppo.py b/verl/trainer/main_ppo.py
+index 6abd2b6c4963519caa83312b03e8e13dff75ec5c..be2884a0e0669a6180badc2c3445ca42e6fcff33 100644
+--- a/verl/trainer/main_ppo.py
++++ b/verl/trainer/main_ppo.py
+@@ -19,6 +19,7 @@ from verl import DataProto
+ import torch
+ from verl.utils.reward_score import qa_em
+ from verl.trainer.ppo.ray_trainer import RayPPOTrainer
++import os
+ import re
+ import numpy as np
+ 
+@@ -101,11 +102,46 @@ import ray
+ import hydra
+ 
+ 
++def _ray_runtime_env():
++    runtime_env = {
++        'env_vars': {
++            'TOKENIZERS_PARALLELISM': 'true',
++            'NCCL_DEBUG': 'WARN',
++        }
++    }
++    profile_step = os.environ.get('SEARCH_R1_NSYS_PROFILE_STEP')
++    if profile_step:
++        if not profile_step.isdigit() or int(profile_step) < 1:
++            raise ValueError('SEARCH_R1_NSYS_PROFILE_STEP must be a positive integer')
++        output_prefix = os.environ.get(
++            'SEARCH_R1_NSYS_OUTPUT_PREFIX',
++            'original_search_r1_worker_%p',
++        )
++        if not output_prefix or '/' in output_prefix or '\\' in output_prefix:
++            raise ValueError('SEARCH_R1_NSYS_OUTPUT_PREFIX must be a filename prefix')
++        runtime_env['nsight'] = {
++            'trace': 'cuda,nvtx,cublas,nccl,osrt',
++            'cuda-memory-usage': 'true',
++            'cpuctxsw': 'none',
++            'capture-range': 'cudaProfilerApi',
++            'capture-range-end': 'stop',
++            'kill': 'none',
++            'o': output_prefix,
++        }
++    return runtime_env
++
++
+ @hydra.main(config_path='config', config_name='ppo_trainer', version_base=None)
+ def main(config):
+     if not ray.is_initialized():
+         # this is for local ray cluster
+-        ray.init(runtime_env={'env_vars': {'TOKENIZERS_PARALLELISM': 'true', 'NCCL_DEBUG': 'WARN'}})
++        ray_init_kwargs = {'runtime_env': _ray_runtime_env()}
++        ray_tmpdir = os.environ.get('SEARCH_R1_RAY_TMPDIR')
++        if ray_tmpdir:
++            if not os.path.isabs(ray_tmpdir) or not os.path.isdir(ray_tmpdir):
++                raise ValueError('SEARCH_R1_RAY_TMPDIR must be an existing absolute directory')
++            ray_init_kwargs['_temp_dir'] = ray_tmpdir
++        ray.init(**ray_init_kwargs)
+ 
+     ray.get(main_task.remote(config))
+ 
 diff --git a/verl/trainer/ppo/ray_trainer.py b/verl/trainer/ppo/ray_trainer.py
-index 4304e0584813c36857265f17238eab38d4b816c3..3e0928aefe6a9113710618434acf5fd0a929ed94 100644
+index 4304e0584813c36857265f17238eab38d4b816c3..0f305dec520877550608f4a95f81371df3e96bd7 100644
 --- a/verl/trainer/ppo/ray_trainer.py
 +++ b/verl/trainer/ppo/ray_trainer.py
 @@ -288,7 +288,10 @@ def compute_timing_metrics(batch, timing_raw):
@@ -461,7 +521,21 @@ index 4304e0584813c36857265f17238eab38d4b816c3..3e0928aefe6a9113710618434acf5fd0
  
          reward_tensor = torch.cat([rw.sum(-1) for rw in reward_tensor_lst], dim=0).cpu()  # (batch_size,)
          # reward_tensor = torch.cat(reward_tensor_lst, dim=0).sum(-1).cpu()  # (batch_size,)
-@@ -701,6 +743,18 @@ class RayPPOTrainer(object):
+@@ -660,6 +702,13 @@ class RayPPOTrainer(object):
+ 
+         logger = self.logger
+         self.global_steps = 0
++        profile_step_raw = os.environ.get('SEARCH_R1_NSYS_PROFILE_STEP')
++        if profile_step_raw:
++            if not profile_step_raw.isdigit() or int(profile_step_raw) < 1:
++                raise ValueError('SEARCH_R1_NSYS_PROFILE_STEP must be a positive integer')
++            profile_step = int(profile_step_raw)
++        else:
++            profile_step = None
+         # perform validation before training
+         # currently, we only support validation using the reward_function.
+         if self.val_reward_fn is not None and self.config.trainer.get('val_before_train', True):
+@@ -701,12 +750,26 @@ class RayPPOTrainer(object):
                  batch: DataProto = DataProto.from_single_dict(batch_dict)
                  batch = batch.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n_agent, interleave=True)
  
@@ -480,7 +554,15 @@ index 4304e0584813c36857265f17238eab38d4b816c3..3e0928aefe6a9113710618434acf5fd0
                  # pop those keys for generation
                  gen_batch = batch.pop(batch_keys=['input_ids', 'attention_mask', 'position_ids'])
  
-@@ -726,18 +780,22 @@ class RayPPOTrainer(object):
+                 ####################
+                 # original code here
+ 
++                if self.global_steps == profile_step:
++                    self.actor_rollout_wg.start_nsys_profile()
+                 with _timer('step', timing_raw):
+                     if not self.config.do_search:
+                         gen_batch_output = self.actor_rollout_wg.generate_sequences(gen_batch)
+@@ -726,18 +789,22 @@ class RayPPOTrainer(object):
  
                          with _timer('gen', timing_raw):
                              generation_manager.timing_raw = timing_raw
@@ -506,7 +588,7 @@ index 4304e0584813c36857265f17238eab38d4b816c3..3e0928aefe6a9113710618434acf5fd0
  
                          # batch.non_tensor_batch['uid'] = np.array([str(uuid.uuid4()) for _ in range(len(batch.batch))],
                          #                                         dtype=object)
-@@ -779,30 +837,32 @@ class RayPPOTrainer(object):
+@@ -779,30 +846,32 @@ class RayPPOTrainer(object):
                          # compute scores. Support both model and function-based.
                          # We first compute the scores using reward model. Then, we call reward_fn to combine
                          # the results from reward model and rule-based results.
@@ -563,7 +645,16 @@ index 4304e0584813c36857265f17238eab38d4b816c3..3e0928aefe6a9113710618434acf5fd0
  
                      # update critic
                      if self.use_critic:
-@@ -845,7 +905,7 @@ class RayPPOTrainer(object):
+@@ -832,6 +901,8 @@ class RayPPOTrainer(object):
+                             self.global_steps % self.config.trainer.save_freq == 0:
+                         with _timer('save_checkpoint', timing_raw):
+                             self._save_checkpoint()
++                if self.global_steps == profile_step:
++                    self.actor_rollout_wg.stop_nsys_profile()
+ 
+                 # collect metrics
+                 metrics.update(compute_data_metrics(batch=batch, use_critic=self.use_critic))
+@@ -845,7 +916,7 @@ class RayPPOTrainer(object):
                  if self.global_steps >= self.total_training_steps:
  
                      # perform validation after training
@@ -603,7 +694,7 @@ index b1fbd6f330451b89286644e226fb743237bc436c..6d27e7edbcbf2ab76f0539b8fda04c96
          for default_backend, logger_instance in self.logger.items():
              if backend is None or default_backend in backend:
 diff --git a/verl/workers/fsdp_workers.py b/verl/workers/fsdp_workers.py
-index e5ba4ea39448b3b4af59f5340f75212761ca4e72..d62764d6466b8bead87796e4abcecf2b8ee1b7eb 100644
+index e5ba4ea39448b3b4af59f5340f75212761ca4e72..30a01281a0e06b51fcf6153b9980a5fd67b935a4 100644
 --- a/verl/workers/fsdp_workers.py
 +++ b/verl/workers/fsdp_workers.py
 @@ -232,8 +232,10 @@ class ActorRolloutRefWorker(Worker):
@@ -619,7 +710,28 @@ index e5ba4ea39448b3b4af59f5340f75212761ca4e72..d62764d6466b8bead87796e4abcecf2b
  
              print(f'Total steps: {total_steps}, num_warmup_steps: {num_warmup_steps}')
  
-@@ -668,8 +670,10 @@ class CriticWorker(Worker):
+@@ -281,6 +283,20 @@ class ActorRolloutRefWorker(Worker):
+ 
+         return rollout, rollout_sharding_manager
+ 
++    @register(dispatch_mode=Dispatch.ONE_TO_ALL)
++    def start_nsys_profile(self):
++        """Start one CUDA-profiler-API capture in every physical worker."""
++        torch.cuda.synchronize()
++        torch.cuda.profiler.start()
++        torch.cuda.nvtx.range_push('search_r1_outer_step')
++
++    @register(dispatch_mode=Dispatch.ONE_TO_ALL)
++    def stop_nsys_profile(self):
++        """Close the outer-step range and stop the process-local capture."""
++        torch.cuda.synchronize()
++        torch.cuda.nvtx.range_pop()
++        torch.cuda.profiler.stop()
++
+     @register(dispatch_mode=Dispatch.ONE_TO_ALL)
+     def init_model(self):
+         from verl.workers.actor import DataParallelPPOActor
+@@ -668,8 +684,10 @@ class CriticWorker(Worker):
                                         weight_decay=config.optim.get('weight_decay', 1e-2))
  
          total_steps = config.optim.get('total_training_steps', 0)

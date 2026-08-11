@@ -343,6 +343,17 @@ retriever URL, and the eight-GPU requirement. `smoke` runs one 8-question x
 5-trajectory update, `performance` runs one warm-up plus three measured updates,
 and `campaign` runs the official 512-question x 5-trajectory, 500-step quality
 campaign. Only a completed campaign can be considered for the quality table.
+All four launchers also accept the same `SEARCH_R1_OBSERVABILITY_MODE` contract:
+`baseline` disables the optional local dashboards and common spans, `clean`
+enables low-overhead local metrics plus sampled spans, and `profile` raises the
+default span sample rate to 100% for the separate Nsight run. A campaign is a
+formal quality candidate only in `clean` mode. Performance reporting always
+keeps a baseline/clean pair and the profile result as three distinct runs.
+The manifests also state the process scope of each Nsight capture. Current
+veRL's asynchronous vLLM server and slime's separate SGLang engines do not have
+a wired Nsight start/stop path in these frozen revisions, so those rollout
+engine scopes are explicitly `missing`; their rollout breakdown still comes
+from the common trajectory spans and external metrics.
 
 Run NeMo RL with its composite JSONL view and strict four-way overlay:
 
@@ -366,7 +377,7 @@ Run the original Search-R1 fork from its patched comparison checkout with:
 
 ```bash
 UV_BIN=/path/to/uv-0.12.3 \
-ORIGINAL_SEARCH_R1_ROOT=/path/to/Search-R1-at-d5b269d \
+ORIGINAL_SEARCH_R1_ROOT=/path/to/Search-R1-at-8f4c5b9 \
 ORIGINAL_SEARCH_R1_PYTHON=/fast/local/original-search-r1-venv/bin/python \
 SEARCH_R1_MODEL_PATH=/path/to/models--Qwen--Qwen2.5-7B/snapshots/d149729... \
 SEARCH_R1_TRAIN_FILE=/path/to/four-way/train.parquet \
@@ -378,7 +389,7 @@ SEARCH_R1_RUN_MODE=performance \
 ```
 
 Its manifest records the untouched public base `598e61b` separately from the
-comparison patch head `d5b269d`. The patch stack adds benchmark counters,
+comparison patch head `8f4c5b9`. The patch stack adds benchmark counters,
 outer-step scheduler alignment, optional final validation, and common
 validation export. It also writes sampled generation/retrieval spans, passes a
 provider-batch ID to E5, mirrors reduced metrics to raw JSONL and TensorBoard,
@@ -434,7 +445,7 @@ PYTHONPATH=/path/to/Megatron-LM python tools/convert_hf_to_torch_dist.py \
 Then launch slime with:
 
 ```bash
-SLIME_ROOT=/path/to/slime-at-a74ae3a \
+SLIME_ROOT=/path/to/slime-at-3c30f8b \
 SLIME_MEGATRON_ROOT=/path/to/Megatron-LM \
 SEARCH_R1_MODEL_PATH=/path/to/models--Qwen--Qwen2.5-7B/snapshots/d149729... \
 SEARCH_R1_SLIME_REF_LOAD=/fast/local/Qwen2.5-7B_torch_dist \

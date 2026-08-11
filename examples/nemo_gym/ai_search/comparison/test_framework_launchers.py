@@ -28,6 +28,9 @@ ORIGINAL_SEARCH_R1_RUNTIME_PREP = (
 )
 CURRENT_VERL_LAUNCHER = COMPARISON_DIR / "run_current_verl_search_r1.sh"
 SLIME_LAUNCHER = COMPARISON_DIR / "run_slime_search_r1.sh"
+SLIME_SEARCH_R1_PATCH = (
+    COMPARISON_DIR / "adapters" / "slime-search-r1-comparison.patch"
+)
 
 
 def _read(path: Path) -> str:
@@ -70,6 +73,8 @@ def test_nemo_search_r1_launcher_freezes_aligned_protocol() -> None:
         '"checkpointing.enabled=${checkpoint_enabled}"',
         "checkpointing.save_period=100",
         'export AI_SEARCH_OBSERVABILITY_MODE="${observability_mode}"',
+        'trace_sample_rate="${SEARCH_R1_TRACE_SAMPLE_RATE:-1.0}"',
+        "policy-and-vllm-worker-processes-step-2",
         "The strict NeMo four-way launcher does not accept positional overrides.",
     )
     for fragment in required_fragments:
@@ -89,8 +94,8 @@ def test_original_search_r1_launcher_freezes_aligned_protocol() -> None:
 
     required_fragments = (
         "expected_upstream_base=598e61bd1d36895726d28a8d06b3a15bed19f5d3",
-        "expected_patched_head=d5b269d2f5298702e6b8c23ab2e6de435b66f37e",
-        "expected_patch_sha256=9fc04e2d0775258f0b69d5e812d9a99f69fd90f23e5a6f36ed981540d256f455",
+        "expected_patched_head=8f4c5b91e4092fb4d8e858cee0689d339aaf310f",
+        "expected_patch_sha256=e8c0e873ccdc2c3220211ca1425de099cb2d7505f902e7658b161e60fa130bf3",
         "expected_runtime_lock_sha256=11a7246f36c9ea844e14b030631d8f8b1489cd245f663a5864bc8b3074d5f269",
         "expected_model_revision=d149729398750b98c0af14eb82c78cfe92750796",
         "expected_train_sha256=64325c44a1ac79c53fc70ad36551e34b4d2ac0fa79cf0d3cca1c4d244bdeaa39",
@@ -117,7 +122,11 @@ def test_original_search_r1_launcher_freezes_aligned_protocol() -> None:
         "prepare_original_search_r1_runtime.sh first",
         'ORIGINAL_SEARCH_R1_VENV="${runtime_root}"',
         "The strict original Search-R1 launcher does not accept positional overrides.",
-        '"trainer.logger=[\'console\',\'local\']"',
+        'trainer_logger="[\'console\',\'local\']"',
+        '"trainer.logger=${trainer_logger}"',
+        "SEARCH_R1_NSYS_PROFILE_STEP=2",
+        "SEARCH_R1_NSYS_OUTPUT_PREFIX=original_search_r1_worker_%p",
+        "actor-rollout-and-reference-worker-processes-full-step",
         "max_turns=4",
         "retriever.topk=3",
     )
@@ -165,7 +174,7 @@ def test_original_search_r1_runtime_is_hash_locked() -> None:
 def test_original_search_r1_patch_is_frozen_and_observable() -> None:
     patch = ORIGINAL_SEARCH_R1_PATCH.read_bytes()
     assert hashlib.sha256(patch).hexdigest() == (
-        "9fc04e2d0775258f0b69d5e812d9a99f69fd90f23e5a6f36ed981540d256f455"
+        "e8c0e873ccdc2c3220211ca1425de099cb2d7505f902e7658b161e60fa130bf3"
     )
     source = patch.decode()
     for fragment in (
@@ -176,6 +185,9 @@ def test_original_search_r1_patch_is_frozen_and_observable() -> None:
         "validation_predictions_path",
         "lr_warmup_steps",
         "val_at_end",
+        "SEARCH_R1_NSYS_PROFILE_STEP",
+        "start_nsys_profile",
+        "capture-range",
         "prometheus-client==0.21.1",
         "tensorboard==2.17.1",
     ):
@@ -219,9 +231,17 @@ def test_current_verl_launcher_freezes_aligned_protocol() -> None:
         "['console','swanlab','tensorboard']",
         "default_trace_sample_rate=0.1",
         'export AI_SEARCH_TRACE_PATH="${output_dir}/trajectory-spans.jsonl"',
-        "printf 'trace_sample_rate=%s\\n' \"${AI_SEARCH_TRACE_SAMPLE_RATE}\"",
+        "printf 'trace_sample_rate=%s\\n' \"${AI_SEARCH_TRACE_SAMPLE_RATE:-disabled}\"",
         "SEARCH_R1_OUTPUT_DIR already contains a run manifest",
         "The strict current-veRL launcher does not accept positional overrides.",
+        'observability_mode="${SEARCH_R1_OBSERVABILITY_MODE:-clean}"',
+        "global_profiler.tool=nsys",
+        '"global_profiler.steps=[2]"',
+        "actor_rollout_ref.actor.profiler.enable=true",
+        "actor_rollout_ref.ref.profiler.enable=true",
+        '"+ray_kwargs.ray_init._temp_dir=${output_dir}/ray"',
+        "actor-and-reference-worker-processes-full-step",
+        "nsys_rollout_engine_scope",
     )
     for fragment in required_fragments:
         assert fragment in source
@@ -232,7 +252,9 @@ def test_slime_launcher_freezes_aligned_protocol() -> None:
     source = _read(SLIME_LAUNCHER)
 
     required_fragments = (
-        "expected_slime_commit=a74ae3a0ad16bd8b769d5386738e8ae3d1269d7e",
+        "expected_slime_base=a74ae3a0ad16bd8b769d5386738e8ae3d1269d7e",
+        "expected_slime_patched_head=3c30f8b4954e40f7baa0073d83a62134c1aec82b",
+        "expected_slime_patch_sha256=50b55d2602e0a9425dbaab5e16430080a54b39e9b340627f857addd3cdb7cb5d",
         "expected_model_revision=d149729398750b98c0af14eb82c78cfe92750796",
         "expected_train_sha256=64325c44a1ac79c53fc70ad36551e34b4d2ac0fa79cf0d3cca1c4d244bdeaa39",
         "expected_eval_sha256=7c7d10d003dce8b0c6c2c0c4177974d0767cd2a380123faf6ee51473bc8e2461",
@@ -260,17 +282,35 @@ def test_slime_launcher_freezes_aligned_protocol() -> None:
         "--custom-megatron-before-train-step-hook-path slime_search_r1_adapter.align_outer_step_lr",
         "--save-debug-rollout-data",
         "--use-tensorboard",
-        'printf \'swanlab_source=post-run-tensorboard-conversion\\n\'',
+        'printf \'swanlab_source=%s\\n\'',
         "default_trace_sample_rate=0.1",
         'export AI_SEARCH_TRACE_PATH="${output_dir}/trajectory-spans.jsonl"',
         '\"AI_SEARCH_TRACE_SAMPLE_RATE\":\"%s\"',
         "SEARCH_R1_OUTPUT_DIR already contains a run manifest",
         "The strict slime launcher does not accept positional overrides.",
+        'observability_mode="${SEARCH_R1_OBSERVABILITY_MODE:-clean}"',
+        "SEARCH_R1_NSYS_PROFILE_ROLLOUT_ID=1",
+        '"capture-range":"cudaProfilerApi"',
     )
     for fragment in required_fragments:
         assert fragment in source
     assert 'if [[ "${num_gpus}" != "8" ]]' in source
     assert "pkill" not in source
+
+
+def test_slime_profile_patch_is_frozen_and_measurement_only() -> None:
+    patch = SLIME_SEARCH_R1_PATCH.read_bytes()
+    assert hashlib.sha256(patch).hexdigest() == (
+        "50b55d2602e0a9425dbaab5e16430080a54b39e9b340627f857addd3cdb7cb5d"
+    )
+    source = patch.decode()
+    for fragment in (
+        "SEARCH_R1_NSYS_PROFILE_ROLLOUT_ID",
+        "start_nsys_profile",
+        "stop_nsys_profile",
+        "search_r1_outer_step",
+    ):
+        assert fragment in source
 
 
 def test_strict_framework_launchers_reject_positional_overrides() -> None:
@@ -283,6 +323,27 @@ def test_strict_framework_launchers_reject_positional_overrides() -> None:
         source = _read(launcher)
         assert "does not accept positional overrides" in source
         assert '"${@}"' not in source
+
+
+def test_all_framework_launchers_share_observability_modes() -> None:
+    for launcher in (
+        NEMO_SEARCH_R1_LAUNCHER,
+        ORIGINAL_SEARCH_R1_LAUNCHER,
+        CURRENT_VERL_LAUNCHER,
+        SLIME_LAUNCHER,
+    ):
+        source = _read(launcher)
+        for fragment in (
+            'observability_mode="${SEARCH_R1_OBSERVABILITY_MODE:-clean}"',
+            "baseline)",
+            "clean)",
+            "profile)",
+            'trace_sample_rate="${SEARCH_R1_TRACE_SAMPLE_RATE:-1.0}"',
+            "SEARCH_R1_OBSERVABILITY_MODE must be baseline, clean, or profile.",
+            "SEARCH_R1_OBSERVABILITY_MODE=profile requires SEARCH_R1_RUN_MODE=performance.",
+            '"${run_mode}" == campaign && "${observability_mode}" == clean',
+        ):
+            assert fragment in source
 
 
 def test_slime_eval_template_uses_runtime_common_dataset() -> None:

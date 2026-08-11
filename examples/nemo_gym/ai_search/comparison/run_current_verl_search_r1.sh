@@ -13,6 +13,7 @@ eval_file="${SEARCH_R1_EVAL_FILE:?SEARCH_R1_EVAL_FILE must point to four_way_eva
 retriever_url="${SEARCH_R1_RETRIEVER_URL:?SEARCH_R1_RETRIEVER_URL must point to the shared E5 /retrieve endpoint}"
 output_dir="${SEARCH_R1_OUTPUT_DIR:?SEARCH_R1_OUTPUT_DIR must be set}"
 run_mode="${SEARCH_R1_RUN_MODE:-smoke}"
+observability_mode="${SEARCH_R1_OBSERVABILITY_MODE:-clean}"
 seed="${SEARCH_R1_SEED:-42}"
 num_gpus="${SEARCH_R1_NUM_GPUS:-8}"
 lr_schedule_horizon_outer_steps=500
@@ -34,7 +35,6 @@ case "${run_mode}" in
     save_freq=-1
     test_freq=-1
     val_before_train=false
-    logger="['console']"
     default_trace_sample_rate=1.0
     ;;
   performance)
@@ -47,7 +47,6 @@ case "${run_mode}" in
     save_freq=-1
     test_freq=-1
     val_before_train=false
-    logger="['console','swanlab','tensorboard']"
     default_trace_sample_rate=0.1
     ;;
   campaign)
@@ -60,7 +59,6 @@ case "${run_mode}" in
     save_freq=100
     test_freq=50
     val_before_train=true
-    logger="['console','swanlab','tensorboard']"
     default_trace_sample_rate=0.01
     ;;
   *)
@@ -68,7 +66,29 @@ case "${run_mode}" in
     exit 1
     ;;
 esac
-trace_sample_rate="${SEARCH_R1_TRACE_SAMPLE_RATE:-${default_trace_sample_rate}}"
+
+case "${observability_mode}" in
+  baseline)
+    logger="['console']"
+    trace_sample_rate=disabled
+    ;;
+  clean)
+    logger="['console','swanlab','tensorboard']"
+    trace_sample_rate="${SEARCH_R1_TRACE_SAMPLE_RATE:-${default_trace_sample_rate}}"
+    ;;
+  profile)
+    logger="['console','swanlab','tensorboard']"
+    trace_sample_rate="${SEARCH_R1_TRACE_SAMPLE_RATE:-1.0}"
+    ;;
+  *)
+    echo "SEARCH_R1_OBSERVABILITY_MODE must be baseline, clean, or profile." >&2
+    exit 1
+    ;;
+esac
+if [[ "${observability_mode}" == profile && "${run_mode}" != performance ]]; then
+  echo "SEARCH_R1_OBSERVABILITY_MODE=profile requires SEARCH_R1_RUN_MODE=performance." >&2
+  exit 1
+fi
 
 if (( $# != 0 )); then
   echo "The strict current-veRL launcher does not accept positional overrides." >&2
@@ -124,6 +144,9 @@ fi
 
 mkdir -p \
   "${output_dir}/checkpoints" \
+  "${output_dir}/nsight" \
+  "${output_dir}/nsight-tmp" \
+  "${output_dir}/ray" \
   "${output_dir}/rollouts" \
   "${output_dir}/validation" \
   "${output_dir}/swanlab" \
@@ -131,17 +154,44 @@ mkdir -p \
 
 export PYTHONPATH="${comparison_dir}:${verl_root}${PYTHONPATH:+:${PYTHONPATH}}"
 export SEARCH_R1_RETRIEVER_URL="${retriever_url}"
-export AI_SEARCH_TRACE_PATH="${output_dir}/trajectory-spans.jsonl"
-export AI_SEARCH_TRACE_SAMPLE_RATE="${trace_sample_rate}"
-export SWANLAB_MODE=local
-export SWANLAB_LOG_DIR="${output_dir}/swanlab"
-export TENSORBOARD_DIR="${output_dir}/tensorboard"
+unset AI_SEARCH_TRACE_PATH AI_SEARCH_TRACE_SAMPLE_RATE
+unset SWANLAB_MODE SWANLAB_LOG_DIR TENSORBOARD_DIR
+nsys_executable=disabled
+nsys_version=disabled
+if [[ "${observability_mode}" != baseline ]]; then
+  export AI_SEARCH_TRACE_PATH="${output_dir}/trajectory-spans.jsonl"
+  export AI_SEARCH_TRACE_SAMPLE_RATE="${trace_sample_rate}"
+  export SWANLAB_MODE=local
+  export SWANLAB_LOG_DIR="${output_dir}/swanlab"
+  export TENSORBOARD_DIR="${output_dir}/tensorboard"
+fi
+if [[ "${observability_mode}" == profile ]]; then
+  nsys_executable="${SEARCH_R1_NSYS_BIN:-$(command -v nsys || true)}"
+  if [[ -z "${nsys_executable}" || ! -x "${nsys_executable}" ]]; then
+    if [[ "${SEARCH_R1_PRINT_COMMAND:-0}" != 1 ]]; then
+      echo "Profile mode requires an executable nsys; set SEARCH_R1_NSYS_BIN." >&2
+      exit 1
+    fi
+    nsys_executable=required-at-runtime
+    nsys_version=required-at-runtime
+  else
+    nsys_executable=$(readlink -f "${nsys_executable}")
+    export PATH="$(dirname -- "${nsys_executable}"):${PATH}"
+    nsys_version=$("${nsys_executable}" --version 2>&1 | tail -n 1)
+  fi
+  export NSYS_TMPDIR="${SEARCH_R1_NSYS_TMPDIR:-${output_dir}/nsight-tmp}"
+  if [[ "${NSYS_TMPDIR}" != /* ]]; then
+    echo "SEARCH_R1_NSYS_TMPDIR must be an absolute path." >&2
+    exit 1
+  fi
+  mkdir -p "${NSYS_TMPDIR}"
+fi
 export TOKENIZERS_PARALLELISM=false
 export PYTHONUNBUFFERED=1
 
 {
   printf 'framework=current-verl\n'
-  printf 'run_mode=%s\n' "${run_mode}"
+  printf 'run_mode=%s\nobservability_mode=%s\n' "${run_mode}" "${observability_mode}"
   printf 'source_commit=%s\n' "${expected_verl_commit}"
   printf 'adapter_commit=%s\n' "$(git -C "${comparison_dir}" rev-parse HEAD)"
   printf 'model_revision=%s\n' "${expected_model_revision}"
@@ -161,9 +211,14 @@ export PYTHONUNBUFFERED=1
   printf 'optimizer_betas=0.9,0.999\noptimizer_epsilon=1e-8\n'
   printf 'lr_schedule_horizon_outer_steps=%s\n' "${lr_schedule_horizon_outer_steps}"
   printf 'lr_warmup_outer_steps=%s\nlr_after_warmup=constant\n' "${lr_warmup_outer_steps}"
-  printf 'trace_path=%s\n' "${AI_SEARCH_TRACE_PATH}"
-  printf 'trace_sample_rate=%s\n' "${AI_SEARCH_TRACE_SAMPLE_RATE}"
-  printf 'formal_parity_result=%s\n' "$([[ "${run_mode}" == campaign ]] && echo candidate || echo false)"
+  printf 'trace_path=%s\n' "${AI_SEARCH_TRACE_PATH:-disabled}"
+  printf 'trace_sample_rate=%s\n' "${AI_SEARCH_TRACE_SAMPLE_RATE:-disabled}"
+  printf 'swanlab_mode=%s\ntensorboard_dir=%s\n' "${SWANLAB_MODE:-disabled}" "${TENSORBOARD_DIR:-disabled}"
+  printf 'nsys_executable=%s\nnsys_version=%s\n' "${nsys_executable}" "${nsys_version}"
+  printf 'nsys_profile_step=%s\nray_tmpdir=%s\n' "$([[ "${observability_mode}" == profile ]] && echo 2 || echo disabled)" "$([[ "${observability_mode}" == profile ]] && echo "${output_dir}/ray" || echo disabled)"
+  printf 'nsys_scope=%s\n' "$([[ "${observability_mode}" == profile ]] && echo actor-and-reference-worker-processes-full-step || echo disabled)"
+  printf 'nsys_rollout_engine_scope=%s\n' "$([[ "${observability_mode}" == profile ]] && echo missing || echo disabled)"
+  printf 'formal_parity_result=%s\n' "$([[ "${run_mode}" == campaign && "${observability_mode}" == clean ]] && echo candidate || echo false)"
 } > "${output_dir}/manifest.txt"
 
 command=(
@@ -235,7 +290,7 @@ command=(
   trainer.balance_batch=false
   "trainer.logger=${logger}"
   trainer.project_name=search-r1-four-way
-  "trainer.experiment_name=current-verl-${run_mode}-seed-${seed}"
+  "trainer.experiment_name=current-verl-${run_mode}-${observability_mode}-seed-${seed}"
   trainer.nnodes=1
   "trainer.n_gpus_per_node=${num_gpus}"
   "trainer.total_training_steps=${total_steps}"
@@ -249,6 +304,21 @@ command=(
   "trainer.rollout_data_dir=${output_dir}/rollouts"
   "trainer.validation_data_dir=${output_dir}/validation"
 )
+
+if [[ "${observability_mode}" == profile ]]; then
+  command+=(
+    global_profiler.tool=nsys
+    "global_profiler.steps=[2]"
+    global_profiler.profile_continuous_steps=false
+    "global_profiler.save_path=${output_dir}/nsight"
+    global_profiler.global_tool_config.nsys.discrete=false
+    actor_rollout_ref.actor.profiler.enable=true
+    actor_rollout_ref.actor.profiler.all_ranks=true
+    actor_rollout_ref.ref.profiler.enable=true
+    actor_rollout_ref.ref.profiler.all_ranks=true
+    "+ray_kwargs.ray_init._temp_dir=${output_dir}/ray"
+  )
+fi
 
 if [[ "${SEARCH_R1_PRINT_COMMAND:-0}" == "1" ]]; then
   printf '%q ' "${command[@]}"

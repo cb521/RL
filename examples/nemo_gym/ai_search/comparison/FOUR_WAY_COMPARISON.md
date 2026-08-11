@@ -20,9 +20,9 @@ explicit adapters.
 | Name | Source | Frozen revision | Classification |
 | --- | --- | --- | --- |
 | NeMo RL | This repository | Recorded in each run manifest | Strict text-action reproduction |
-| Original Search-R1 | [PeterGriffinJin/Search-R1](https://github.com/PeterGriffinJin/Search-R1) | Upstream base `598e61bd1d36895726d28a8d06b3a15bed19f5d3`; aligned patch head `d5b269d2f5298702e6b8c23ab2e6de435b66f37e` | Paper's public veRL fork plus a disclosed comparison patch stack |
+| Original Search-R1 | [PeterGriffinJin/Search-R1](https://github.com/PeterGriffinJin/Search-R1) | Upstream base `598e61bd1d36895726d28a8d06b3a15bed19f5d3`; aligned patch head `8f4c5b91e4092fb4d8e858cee0689d339aaf310f` | Paper's public veRL fork plus a disclosed comparison patch stack |
 | Current veRL | [verl-project/verl](https://github.com/verl-project/verl) | `5cfb74fa04c7f6e5d98260b8f05157c6a9402695` | Current Agent Loop plus a disclosed Search-R1 adapter |
-| slime | [THUDM/slime](https://github.com/THUDM/slime/tree/main/examples/search-r1) | `a74ae3a0ad16bd8b769d5386738e8ae3d1269d7e` | Published `Search-R1 lite` example plus a disclosed aligned recipe |
+| slime | [THUDM/slime](https://github.com/THUDM/slime/tree/main/examples/search-r1) | Upstream base `a74ae3a0ad16bd8b769d5386738e8ae3d1269d7e`; measurement-only patch head `3c30f8b4954e40f7baa0073d83a62134c1aec82b` | Published `Search-R1 lite` example plus disclosed alignment and profiling adapters |
 
 The current veRL row is not an upstream runnable Search-R1 recipe. Its main
 branch retains `preprocess_search_r1_dataset.py`,
@@ -114,7 +114,9 @@ aligned scoreboard.
   Record its actor/rollout GPU split rather than hiding it. Use slime's public
   before-train-step hook to hold LR constant across the ten optimizer
   mini-batches in one outer step, matching the other three schedulers; the hook
-  does not change gradients or optimizer work.
+  does not change gradients or optimizer work. A separate, frozen
+  measurement-only patch brackets one outer step with CUDA profiler API calls
+  on actor processes; clean and baseline runs never enter that branch.
 - **NeMo RL:** use `grpo_qwen2_5_7b_search_r1.yaml` with training shuffle
   disabled for the four-way aligned campaign; the paper-reproduction recipe
   may retain its native shuffle setting. Any diagnostic micro-batch override
@@ -229,6 +231,23 @@ Instrumentation overhead is measured by an otherwise identical on/off pair.
 If a framework cannot expose an internal span, the report marks that field
 missing and retains the common external wall-time boundary. Missing evidence is
 never replaced by a zero-duration stage.
+
+Every strict launcher uses `SEARCH_R1_OBSERVABILITY_MODE=baseline|clean|profile`.
+Baseline disables the optional local dashboard and common trajectory writer;
+clean enables the framework's local metric sink and the run-mode sampling rate;
+profile is a separate run with a 100% default trajectory sample rate and Nsight
+capture. The same mode names therefore have the same measurement meaning even
+when a framework's native logger or profiler implementation differs.
+
+The Nsight process coverage is recorded, not assumed. NeMo RL and the patched
+original Search-R1 cover their policy and rollout workers. Current veRL's
+native Nsight path covers actor and reference workers, but its asynchronous
+vLLM server explicitly supports only the Torch and NPU profilers, so its
+rollout-engine Nsight scope is marked `missing`. The slime measurement patch
+likewise covers actor processes while its separate SGLang rollout engines are
+marked `missing`. Common trajectory spans and external resource samples remain
+available for those rollout stages; a missing GPU timeline is never reported
+as zero work.
 
 ## Result validity checklist
 

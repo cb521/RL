@@ -15,10 +15,13 @@ eval_file="${SEARCH_R1_EVAL_FILE:?SEARCH_R1_EVAL_FILE must point to four_way_eva
 retriever_url="${SEARCH_R1_RETRIEVER_URL:?SEARCH_R1_RETRIEVER_URL must point to the shared E5 /retrieve endpoint}"
 output_dir="${SEARCH_R1_OUTPUT_DIR:?SEARCH_R1_OUTPUT_DIR must be set}"
 run_mode="${SEARCH_R1_RUN_MODE:-smoke}"
+observability_mode="${SEARCH_R1_OBSERVABILITY_MODE:-clean}"
 seed="${SEARCH_R1_SEED:-42}"
 num_gpus="${SEARCH_R1_NUM_GPUS:-8}"
 
-expected_slime_commit=a74ae3a0ad16bd8b769d5386738e8ae3d1269d7e
+expected_slime_base=a74ae3a0ad16bd8b769d5386738e8ae3d1269d7e
+expected_slime_patched_head=3c30f8b4954e40f7baa0073d83a62134c1aec82b
+expected_slime_patch_sha256=50b55d2602e0a9425dbaab5e16430080a54b39e9b340627f857addd3cdb7cb5d
 expected_model_revision=d149729398750b98c0af14eb82c78cfe92750796
 expected_train_sha256=64325c44a1ac79c53fc70ad36551e34b4d2ac0fa79cf0d3cca1c4d244bdeaa39
 expected_eval_sha256=7c7d10d003dce8b0c6c2c0c4177974d0767cd2a380123faf6ee51473bc8e2461
@@ -30,7 +33,6 @@ case "${run_mode}" in
     global_batch_size=40
     eval_interval=""
     save_interval=""
-    enable_tensorboard=0
     lr_schedule_horizon_optimizer_updates=500
     lr_warmup_optimizer_updates=142
     default_trace_sample_rate=1.0
@@ -41,7 +43,6 @@ case "${run_mode}" in
     global_batch_size=40
     eval_interval=""
     save_interval=""
-    enable_tensorboard=1
     lr_schedule_horizon_optimizer_updates=500
     lr_warmup_optimizer_updates=142
     default_trace_sample_rate=0.1
@@ -52,7 +53,6 @@ case "${run_mode}" in
     global_batch_size=256
     eval_interval=50
     save_interval=100
-    enable_tensorboard=1
     # Ten optimizer mini-batches are consumed by every 2,560-trajectory outer step.
     lr_schedule_horizon_optimizer_updates=5000
     lr_warmup_optimizer_updates=1420
@@ -63,15 +63,47 @@ case "${run_mode}" in
     exit 1
     ;;
 esac
-trace_sample_rate="${SEARCH_R1_TRACE_SAMPLE_RATE:-${default_trace_sample_rate}}"
+if [[ "${observability_mode}" == profile && "${run_mode}" != performance ]]; then
+  echo "SEARCH_R1_OBSERVABILITY_MODE=profile requires SEARCH_R1_RUN_MODE=performance." >&2
+  exit 1
+fi
+
+case "${observability_mode}" in
+  baseline)
+    enable_tensorboard=0
+    trace_sample_rate=disabled
+    ;;
+  clean)
+    enable_tensorboard=1
+    trace_sample_rate="${SEARCH_R1_TRACE_SAMPLE_RATE:-${default_trace_sample_rate}}"
+    ;;
+  profile)
+    enable_tensorboard=1
+    trace_sample_rate="${SEARCH_R1_TRACE_SAMPLE_RATE:-1.0}"
+    ;;
+  *)
+    echo "SEARCH_R1_OBSERVABILITY_MODE must be baseline, clean, or profile." >&2
+    exit 1
+    ;;
+esac
 
 if (( $# != 0 )); then
   echo "The strict slime launcher does not accept positional overrides." >&2
   exit 1
 fi
 
-if [[ "$(git -C "${slime_root}" rev-parse HEAD)" != "${expected_slime_commit}" ]]; then
-  echo "slime checkout moved from ${expected_slime_commit}." >&2
+actual_slime_head=$(git -C "${slime_root}" rev-parse HEAD)
+if ! git -C "${slime_root}" merge-base --is-ancestor \
+  "${expected_slime_base}" "${actual_slime_head}"; then
+  echo "slime patch head does not descend from ${expected_slime_base}." >&2
+  exit 1
+fi
+actual_slime_patch_sha256="$({
+  git -C "${slime_root}" diff --full-index --binary \
+    "${expected_slime_base}..${actual_slime_head}"
+} | sha256sum | cut -d ' ' -f 1)"
+if [[ "${actual_slime_patch_sha256}" != "${expected_slime_patch_sha256}" ]]; then
+  echo "slime comparison diff does not match ${expected_slime_patch_sha256}." >&2
   exit 1
 fi
 if ! git -C "${slime_root}" diff --quiet || ! git -C "${slime_root}" diff --cached --quiet; then
@@ -91,6 +123,7 @@ for required_path in \
   "${slime_root}/scripts/models/qwen2.5-7B.sh" \
   "${comparison_dir}/framework_eval_adapters.py" \
   "${comparison_dir}/slime_search_r1_adapter.py" \
+  "${comparison_dir}/adapters/slime-search-r1-comparison.patch" \
   "${comparison_dir}/adapters/slime-search-r1-eval.example.yaml"; do
   if [[ ! -e "${required_path}" ]]; then
     echo "Missing aligned slime artifact: ${required_path}" >&2
@@ -129,23 +162,54 @@ mkdir -p \
   "${output_dir}/checkpoints" \
   "${output_dir}/common-eval" \
   "${output_dir}/debug-rollouts" \
+  "${output_dir}/nsight-tmp" \
+  "${output_dir}/ray" \
   "${output_dir}/swanlab" \
   "${output_dir}/tensorboard"
 
 export PYTHONPATH="${comparison_dir}:${slime_root}:${megatron_root}${PYTHONPATH:+:${PYTHONPATH}}"
 export SEARCH_R1_RETRIEVER_URL="${retriever_url}"
-export AI_SEARCH_TRACE_PATH="${output_dir}/trajectory-spans.jsonl"
-export AI_SEARCH_TRACE_SAMPLE_RATE="${trace_sample_rate}"
+unset AI_SEARCH_TRACE_PATH AI_SEARCH_TRACE_SAMPLE_RATE TENSORBOARD_DIR
+unset SEARCH_R1_NSYS_PROFILE_ROLLOUT_ID
+nsys_executable=disabled
+nsys_version=disabled
+if [[ "${observability_mode}" != baseline ]]; then
+  export AI_SEARCH_TRACE_PATH="${output_dir}/trajectory-spans.jsonl"
+  export AI_SEARCH_TRACE_SAMPLE_RATE="${trace_sample_rate}"
+  export TENSORBOARD_DIR="${output_dir}/tensorboard"
+fi
+if [[ "${observability_mode}" == profile ]]; then
+  nsys_executable="${SEARCH_R1_NSYS_BIN:-$(command -v nsys || true)}"
+  if [[ -z "${nsys_executable}" || ! -x "${nsys_executable}" ]]; then
+    if [[ "${SEARCH_R1_PRINT_COMMAND:-0}" != 1 ]]; then
+      echo "Profile mode requires an executable nsys; set SEARCH_R1_NSYS_BIN." >&2
+      exit 1
+    fi
+    nsys_executable=required-at-runtime
+    nsys_version=required-at-runtime
+  else
+    nsys_executable=$(readlink -f "${nsys_executable}")
+    export PATH="$(dirname -- "${nsys_executable}"):${PATH}"
+    nsys_version=$("${nsys_executable}" --version 2>&1 | tail -n 1)
+  fi
+  export NSYS_TMPDIR="${SEARCH_R1_NSYS_TMPDIR:-${output_dir}/nsight-tmp}"
+  if [[ "${NSYS_TMPDIR}" != /* ]]; then
+    echo "SEARCH_R1_NSYS_TMPDIR must be an absolute path." >&2
+    exit 1
+  fi
+  mkdir -p "${NSYS_TMPDIR}"
+  export SEARCH_R1_NSYS_PROFILE_ROLLOUT_ID=1
+fi
 export SEARCH_R1_EVAL_FILE="${eval_file}"
 export SEARCH_R1_COMMON_EVAL_DIR="${output_dir}/common-eval"
-export TENSORBOARD_DIR="${output_dir}/tensorboard"
 export TOKENIZERS_PARALLELISM=false
 export PYTHONUNBUFFERED=1
 
 {
   printf 'framework=slime\n'
-  printf 'run_mode=%s\n' "${run_mode}"
-  printf 'source_commit=%s\n' "${expected_slime_commit}"
+  printf 'run_mode=%s\nobservability_mode=%s\n' "${run_mode}" "${observability_mode}"
+  printf 'source_upstream_base=%s\nsource_patched_head=%s\n' "${expected_slime_base}" "${actual_slime_head}"
+  printf 'reference_patch_head=%s\nsource_patch_sha256=%s\n' "${expected_slime_patched_head}" "${actual_slime_patch_sha256}"
   printf 'adapter_commit=%s\n' "$(git -C "${comparison_dir}" rev-parse HEAD)"
   printf 'model_revision=%s\n' "${expected_model_revision}"
   printf 'train_sha256=%s\n' "${expected_train_sha256}"
@@ -165,10 +229,14 @@ export PYTHONUNBUFFERED=1
   printf 'lr_warmup_optimizer_updates=%s\n' "${lr_warmup_optimizer_updates}"
   printf 'lr_warmup_outer_steps=142\nlr_scheduler_granularity=outer_step\n'
   printf 'lr_after_warmup=constant\n'
-  printf 'trace_path=%s\n' "${AI_SEARCH_TRACE_PATH}"
-  printf 'trace_sample_rate=%s\n' "${AI_SEARCH_TRACE_SAMPLE_RATE}"
-  printf 'swanlab_source=post-run-tensorboard-conversion\n'
-  printf 'formal_parity_result=%s\n' "$([[ "${run_mode}" == campaign ]] && echo candidate || echo false)"
+  printf 'trace_path=%s\n' "${AI_SEARCH_TRACE_PATH:-disabled}"
+  printf 'trace_sample_rate=%s\n' "${AI_SEARCH_TRACE_SAMPLE_RATE:-disabled}"
+  printf 'tensorboard_dir=%s\n' "${TENSORBOARD_DIR:-disabled}"
+  printf 'swanlab_source=%s\n' "$([[ "${enable_tensorboard}" == 1 ]] && echo post-run-tensorboard-conversion || echo disabled)"
+  printf 'nsys_executable=%s\nnsys_version=%s\n' "${nsys_executable}" "${nsys_version}"
+  printf 'nsys_profile_rollout_id=%s\nnsys_scope=%s\n' "${SEARCH_R1_NSYS_PROFILE_ROLLOUT_ID:-disabled}" "$([[ "${observability_mode}" == profile ]] && echo actor-processes-full-outer-step || echo disabled)"
+  printf 'nsys_rollout_engine_scope=%s\n' "$([[ "${observability_mode}" == profile ]] && echo missing || echo disabled)"
+  printf 'formal_parity_result=%s\n' "$([[ "${run_mode}" == campaign && "${observability_mode}" == clean ]] && echo candidate || echo false)"
 } > "${output_dir}/manifest.txt"
 
 # shellcheck source=/dev/null
@@ -244,7 +312,7 @@ if [[ "${enable_tensorboard}" == "1" ]]; then
   command+=(
     --use-tensorboard
     --tb-project-name search-r1-four-way
-    --tb-experiment-name "slime-${run_mode}-seed-${seed}"
+    --tb-experiment-name "slime-${run_mode}-${observability_mode}-seed-${seed}"
   )
 fi
 if [[ -n "${eval_interval}" ]]; then
@@ -274,18 +342,33 @@ ray start \
   --head \
   --node-ip-address "${master_addr}" \
   --num-gpus "${num_gpus}" \
+  --temp-dir "${output_dir}/ray" \
   --disable-usage-stats
 trap 'ray stop --force >/dev/null 2>&1 || true' EXIT INT TERM
 
-runtime_env_json=$(printf \
-  '{"env_vars":{"PYTHONPATH":"%s","CUDA_DEVICE_MAX_CONNECTIONS":"1","SEARCH_R1_RETRIEVER_URL":"%s","SEARCH_R1_EVAL_FILE":"%s","SEARCH_R1_COMMON_EVAL_DIR":"%s","TENSORBOARD_DIR":"%s","AI_SEARCH_TRACE_PATH":"%s","AI_SEARCH_TRACE_SAMPLE_RATE":"%s"}}' \
-  "${PYTHONPATH}" \
-  "${retriever_url}" \
-  "${eval_file}" \
-  "${SEARCH_R1_COMMON_EVAL_DIR}" \
-  "${TENSORBOARD_DIR}" \
-  "${AI_SEARCH_TRACE_PATH}" \
-  "${AI_SEARCH_TRACE_SAMPLE_RATE}")
+if [[ "${observability_mode}" == profile ]]; then
+  runtime_env_json=$(printf \
+    '{"env_vars":{"PYTHONPATH":"%s","PATH":"%s","NSYS_TMPDIR":"%s","CUDA_DEVICE_MAX_CONNECTIONS":"1","SEARCH_R1_RETRIEVER_URL":"%s","SEARCH_R1_EVAL_FILE":"%s","SEARCH_R1_COMMON_EVAL_DIR":"%s","TENSORBOARD_DIR":"%s","AI_SEARCH_TRACE_PATH":"%s","AI_SEARCH_TRACE_SAMPLE_RATE":"%s","SEARCH_R1_NSYS_PROFILE_ROLLOUT_ID":"1"},"nsight":{"trace":"cuda,nvtx,cublas,nccl,osrt","cuda-memory-usage":"true","cpuctxsw":"none","capture-range":"cudaProfilerApi","capture-range-end":"stop","kill":"none","o":"slime_actor_%%p"}}' \
+    "${PYTHONPATH}" \
+    "${PATH}" \
+    "${NSYS_TMPDIR}" \
+    "${retriever_url}" \
+    "${eval_file}" \
+    "${SEARCH_R1_COMMON_EVAL_DIR}" \
+    "${TENSORBOARD_DIR:-}" \
+    "${AI_SEARCH_TRACE_PATH:-}" \
+    "${AI_SEARCH_TRACE_SAMPLE_RATE:-}")
+else
+  runtime_env_json=$(printf \
+    '{"env_vars":{"PYTHONPATH":"%s","CUDA_DEVICE_MAX_CONNECTIONS":"1","SEARCH_R1_RETRIEVER_URL":"%s","SEARCH_R1_EVAL_FILE":"%s","SEARCH_R1_COMMON_EVAL_DIR":"%s","TENSORBOARD_DIR":"%s","AI_SEARCH_TRACE_PATH":"%s","AI_SEARCH_TRACE_SAMPLE_RATE":"%s"}}' \
+    "${PYTHONPATH}" \
+    "${retriever_url}" \
+    "${eval_file}" \
+    "${SEARCH_R1_COMMON_EVAL_DIR}" \
+    "${TENSORBOARD_DIR:-}" \
+    "${AI_SEARCH_TRACE_PATH:-}" \
+    "${AI_SEARCH_TRACE_SAMPLE_RATE:-}")
+fi
 
 ray job submit \
   --address=http://127.0.0.1:8265 \

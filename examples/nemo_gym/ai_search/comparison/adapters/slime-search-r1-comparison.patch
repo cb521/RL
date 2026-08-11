@@ -1,0 +1,92 @@
+diff --git a/slime/ray/actor_group.py b/slime/ray/actor_group.py
+index 7662a0de69859290d8cfffd00ac62e61649ebffd..1650f8f74d78a3d80d786d180e064a5a027d2da7 100644
+--- a/slime/ray/actor_group.py
++++ b/slime/ray/actor_group.py
+@@ -210,6 +210,12 @@ class RayTrainGroup:
+     def clear_memory(self):
+         return ray.get([actor.clear_memory.remote() for actor in self._actor_handlers])
+ 
++    def start_nsys_profile(self):
++        return ray.get([actor.start_nsys_profile.remote() for actor in self._actor_handlers])
++
++    def stop_nsys_profile(self):
++        return ray.get([actor.stop_nsys_profile.remote() for actor in self._actor_handlers])
++
+     def set_rollout_manager(self, rollout_manager):
+         self._rollout_manager = rollout_manager
+         return ray.get([actor.set_rollout_manager.remote(rollout_manager) for actor in self._actor_handlers])
+diff --git a/slime/ray/train_actor.py b/slime/ray/train_actor.py
+index a8ba6ddc645646fdfe7444b2dc2dc7c1d7ca8be9..34ecd0fa914397c24bd044c3af6b89aec14ebe0a 100644
+--- a/slime/ray/train_actor.py
++++ b/slime/ray/train_actor.py
+@@ -98,6 +98,22 @@ class TrainRayActor(RayActor):
+         clear_memory()
+         print_memory("after TrainRayActor.clear_memory")
+ 
++    def start_nsys_profile(self):
++        """Start a process-local Nsight capture at an outer-step boundary."""
++        if self.args.debug_rollout_only:
++            return
++        torch.cuda.synchronize()
++        torch.cuda.profiler.start()
++        torch.cuda.nvtx.range_push("search_r1_outer_step")
++
++    def stop_nsys_profile(self):
++        """Close the outer-step range and stop its process-local capture."""
++        if self.args.debug_rollout_only:
++            return
++        torch.cuda.synchronize()
++        torch.cuda.nvtx.range_pop()
++        torch.cuda.profiler.stop()
++
+     @abc.abstractmethod
+     def sleep(self, tags):
+         raise NotImplementedError
+diff --git a/train.py b/train.py
+index 9cb296886619536b65fb8637b16901aa74f1c76f..afffb3198a78772925b8e892e25ef9f4a7dd3be9 100644
+--- a/train.py
++++ b/train.py
+@@ -1,3 +1,5 @@
++import os
++
+ import ray
+ 
+ from slime.ray.placement_group import create_placement_groups, create_rollout_manager, create_training_models
+@@ -6,6 +8,15 @@ from slime.utils.logging_utils import configure_logger, finish_tracking, init_tr
+ from slime.utils.misc import should_run_periodic_action
+ 
+ 
++def _nsys_profile_rollout_id():
++    raw_value = os.environ.get("SEARCH_R1_NSYS_PROFILE_ROLLOUT_ID")
++    if raw_value is None:
++        return None
++    if not raw_value.isdigit():
++        raise ValueError("SEARCH_R1_NSYS_PROFILE_ROLLOUT_ID must be non-negative")
++    return int(raw_value)
++
++
+ def train(args):
+     configure_logger()
+     release_train = args.release_train
+@@ -45,8 +56,12 @@ def train(args):
+             else:
+                 critic_model.clear_memory()
+ 
++    profile_rollout_id = _nsys_profile_rollout_id()
++
+     # train loop.
+     for rollout_id in range(args.start_rollout_id, args.num_rollout):
++        if rollout_id == profile_rollout_id:
++            actor_model.start_nsys_profile()
+         if args.eval_interval is not None and rollout_id == 0 and not args.skip_eval_before_train:
+             ray.get(rollout_manager.eval.remote(rollout_id))
+ 
+@@ -83,6 +98,8 @@ def train(args):
+         if args.offload_rollout and not release_train:
+             ray.get(rollout_manager.onload_weights.remote())
+         actor_model.update_weights()
++        if rollout_id == profile_rollout_id:
++            actor_model.stop_nsys_profile()
+ 
+         if args.offload_rollout:
+             ray.get(rollout_manager.onload_kv.remote())

@@ -14,12 +14,13 @@ eval_file="${SEARCH_R1_EVAL_FILE:?SEARCH_R1_EVAL_FILE must point to four_way_eva
 retriever_url="${SEARCH_R1_RETRIEVER_URL:?SEARCH_R1_RETRIEVER_URL must point to the shared E5 /retrieve endpoint}"
 output_dir="${SEARCH_R1_OUTPUT_DIR:?SEARCH_R1_OUTPUT_DIR must be set}"
 run_mode="${SEARCH_R1_RUN_MODE:-smoke}"
+observability_mode="${SEARCH_R1_OBSERVABILITY_MODE:-clean}"
 seed="${SEARCH_R1_SEED:-42}"
 num_gpus="${SEARCH_R1_NUM_GPUS:-8}"
 
 expected_upstream_base=598e61bd1d36895726d28a8d06b3a15bed19f5d3
-expected_patched_head=d5b269d2f5298702e6b8c23ab2e6de435b66f37e
-expected_patch_sha256=9fc04e2d0775258f0b69d5e812d9a99f69fd90f23e5a6f36ed981540d256f455
+expected_patched_head=8f4c5b91e4092fb4d8e858cee0689d339aaf310f
+expected_patch_sha256=e8c0e873ccdc2c3220211ca1425de099cb2d7505f902e7658b161e60fa130bf3
 expected_runtime_lock_sha256=11a7246f36c9ea844e14b030631d8f8b1489cd245f663a5864bc8b3074d5f269
 expected_model_revision=d149729398750b98c0af14eb82c78cfe92750796
 expected_train_sha256=64325c44a1ac79c53fc70ad36551e34b4d2ac0fa79cf0d3cca1c4d244bdeaa39
@@ -71,7 +72,29 @@ case "${run_mode}" in
     exit 1
     ;;
 esac
-trace_sample_rate="${SEARCH_R1_TRACE_SAMPLE_RATE:-${default_trace_sample_rate}}"
+
+case "${observability_mode}" in
+  baseline)
+    trainer_logger="['console']"
+    trace_sample_rate=disabled
+    ;;
+  clean)
+    trainer_logger="['console','local']"
+    trace_sample_rate="${SEARCH_R1_TRACE_SAMPLE_RATE:-${default_trace_sample_rate}}"
+    ;;
+  profile)
+    trainer_logger="['console','local']"
+    trace_sample_rate="${SEARCH_R1_TRACE_SAMPLE_RATE:-1.0}"
+    ;;
+  *)
+    echo "SEARCH_R1_OBSERVABILITY_MODE must be baseline, clean, or profile." >&2
+    exit 1
+    ;;
+esac
+if [[ "${observability_mode}" == profile && "${run_mode}" != performance ]]; then
+  echo "SEARCH_R1_OBSERVABILITY_MODE=profile requires SEARCH_R1_RUN_MODE=performance." >&2
+  exit 1
+fi
 prometheus_port="${SEARCH_R1_PROMETHEUS_PORT:-9108}"
 runtime_lock="${comparison_dir}/adapters/original-search-r1-runtime.lock"
 # The old trainer starts at global step 1 and stops after incrementing it.
@@ -169,22 +192,56 @@ fi
 
 mkdir -p \
   "${output_dir}/checkpoints" \
+  "${output_dir}/nsight-tmp" \
+  "${output_dir}/ray" \
   "${output_dir}/tensorboard" \
   "${output_dir}/validation" \
   "${output_dir}/observability"
 
 export PYTHONPATH="${comparison_dir}:${search_r1_root}${PYTHONPATH:+:${PYTHONPATH}}"
-export AI_SEARCH_TRACE_PATH="${output_dir}/observability/trajectory-spans.jsonl"
-export AI_SEARCH_TRACE_SAMPLE_RATE="${trace_sample_rate}"
-export AI_SEARCH_METRICS_PATH="${output_dir}/observability/step-metrics.jsonl"
-export AI_SEARCH_TENSORBOARD_DIR="${output_dir}/tensorboard"
-export AI_SEARCH_PROMETHEUS_PORT="${prometheus_port}"
+export PATH="$(dirname -- "${runtime_python_path}"):${PATH}"
+unset AI_SEARCH_TRACE_PATH AI_SEARCH_TRACE_SAMPLE_RATE AI_SEARCH_METRICS_PATH
+unset AI_SEARCH_TENSORBOARD_DIR AI_SEARCH_PROMETHEUS_PORT
+unset SEARCH_R1_NSYS_PROFILE_STEP SEARCH_R1_NSYS_OUTPUT_PREFIX SEARCH_R1_RAY_TMPDIR
+nsys_executable=disabled
+nsys_version=disabled
+if [[ "${observability_mode}" != baseline ]]; then
+  export AI_SEARCH_TRACE_PATH="${output_dir}/observability/trajectory-spans.jsonl"
+  export AI_SEARCH_TRACE_SAMPLE_RATE="${trace_sample_rate}"
+  export AI_SEARCH_METRICS_PATH="${output_dir}/observability/step-metrics.jsonl"
+  export AI_SEARCH_TENSORBOARD_DIR="${output_dir}/tensorboard"
+  export AI_SEARCH_PROMETHEUS_PORT="${prometheus_port}"
+fi
+if [[ "${observability_mode}" == profile ]]; then
+  nsys_executable="${SEARCH_R1_NSYS_BIN:-$(command -v nsys || true)}"
+  if [[ -z "${nsys_executable}" || ! -x "${nsys_executable}" ]]; then
+    if [[ "${SEARCH_R1_PRINT_COMMAND:-0}" != 1 ]]; then
+      echo "Profile mode requires an executable nsys; set SEARCH_R1_NSYS_BIN." >&2
+      exit 1
+    fi
+    nsys_executable=required-at-runtime
+    nsys_version=required-at-runtime
+  else
+    nsys_executable=$(readlink -f "${nsys_executable}")
+    export PATH="$(dirname -- "${nsys_executable}"):${PATH}"
+    nsys_version=$("${nsys_executable}" --version 2>&1 | tail -n 1)
+  fi
+  export NSYS_TMPDIR="${SEARCH_R1_NSYS_TMPDIR:-${output_dir}/nsight-tmp}"
+  if [[ "${NSYS_TMPDIR}" != /* ]]; then
+    echo "SEARCH_R1_NSYS_TMPDIR must be an absolute path." >&2
+    exit 1
+  fi
+  mkdir -p "${NSYS_TMPDIR}"
+  export SEARCH_R1_NSYS_PROFILE_STEP=2
+  export SEARCH_R1_NSYS_OUTPUT_PREFIX=original_search_r1_worker_%p
+  export SEARCH_R1_RAY_TMPDIR="${output_dir}/ray"
+fi
 export TOKENIZERS_PARALLELISM=false
 export PYTHONUNBUFFERED=1
 
 {
   printf 'framework=original-search-r1\n'
-  printf 'run_mode=%s\n' "${run_mode}"
+  printf 'run_mode=%s\nobservability_mode=%s\n' "${run_mode}" "${observability_mode}"
   printf 'source_upstream_base=%s\n' "${expected_upstream_base}"
   printf 'source_patched_head=%s\n' "${actual_patched_head}"
   printf 'reference_patch_head=%s\n' "${expected_patched_head}"
@@ -201,10 +258,14 @@ export PYTHONUNBUFFERED=1
   printf 'optimizer=AdamW\noptimizer_lr=1e-6\noptimizer_weight_decay=0.01\n'
   printf 'optimizer_betas=0.9,0.999\noptimizer_epsilon=1e-8\n'
   printf 'lr_warmup_outer_steps=%s\nlr_after_warmup=constant\n' "${lr_warmup_outer_steps}"
-  printf 'trace_path=%s\ntrace_sample_rate=%s\n' "${AI_SEARCH_TRACE_PATH}" "${AI_SEARCH_TRACE_SAMPLE_RATE}"
-  printf 'metrics_path=%s\ntensorboard_dir=%s\n' "${AI_SEARCH_METRICS_PATH}" "${AI_SEARCH_TENSORBOARD_DIR}"
-  printf 'prometheus_url=http://127.0.0.1:%s/metrics\n' "${AI_SEARCH_PROMETHEUS_PORT}"
-  printf 'formal_parity_result=%s\n' "$([[ "${run_mode}" == campaign ]] && echo candidate || echo false)"
+  printf 'trace_path=%s\ntrace_sample_rate=%s\n' "${AI_SEARCH_TRACE_PATH:-disabled}" "${AI_SEARCH_TRACE_SAMPLE_RATE:-disabled}"
+  printf 'metrics_path=%s\ntensorboard_dir=%s\n' "${AI_SEARCH_METRICS_PATH:-disabled}" "${AI_SEARCH_TENSORBOARD_DIR:-disabled}"
+  printf 'prometheus_url=%s\n' "$([[ -n "${AI_SEARCH_PROMETHEUS_PORT:-}" ]] && printf 'http://127.0.0.1:%s/metrics' "${AI_SEARCH_PROMETHEUS_PORT}" || echo disabled)"
+  printf 'nsys_executable=%s\nnsys_version=%s\n' "${nsys_executable}" "${nsys_version}"
+  printf 'nsys_profile_step=%s\nray_tmpdir=%s\n' "${SEARCH_R1_NSYS_PROFILE_STEP:-disabled}" "${SEARCH_R1_RAY_TMPDIR:-disabled}"
+  printf 'nsys_scope=%s\n' "$([[ "${observability_mode}" == profile ]] && echo actor-rollout-and-reference-worker-processes-full-step || echo disabled)"
+  printf 'nsys_rollout_engine_scope=%s\n' "$([[ "${observability_mode}" == profile ]] && echo covered || echo disabled)"
+  printf 'formal_parity_result=%s\n' "$([[ "${run_mode}" == campaign && "${observability_mode}" == clean ]] && echo candidate || echo false)"
 } > "${output_dir}/manifest.txt"
 
 command=(
@@ -256,7 +317,7 @@ command=(
   "actor_rollout_ref.rollout.log_prob_micro_batch_size=${log_prob_micro_batch_size}"
   "actor_rollout_ref.ref.log_prob_micro_batch_size=${log_prob_micro_batch_size}"
   actor_rollout_ref.ref.fsdp_config.param_offload=false
-  "trainer.logger=['console','local']"
+  "trainer.logger=${trainer_logger}"
   +trainer.val_only=false
   "+trainer.val_before_train=${val_before_train}"
   "+trainer.val_at_end=${val_at_end}"
@@ -266,7 +327,7 @@ command=(
   "trainer.save_freq=${save_freq}"
   "trainer.test_freq=${test_freq}"
   trainer.project_name=search-r1-four-way
-  "trainer.experiment_name=original-search-r1-${run_mode}-seed-${seed}"
+  "trainer.experiment_name=original-search-r1-${run_mode}-${observability_mode}-seed-${seed}"
   trainer.total_epochs=15
   "trainer.total_training_steps=${trainer_stop_step}"
   trainer.default_hdfs_dir=null
