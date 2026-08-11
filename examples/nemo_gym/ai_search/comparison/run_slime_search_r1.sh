@@ -5,6 +5,7 @@
 set -euo pipefail
 
 comparison_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+nemo_root=$(cd -- "${comparison_dir}/../../../.." && pwd)
 slime_root="${SLIME_ROOT:?SLIME_ROOT must point to the frozen slime checkout}"
 megatron_root="${SLIME_MEGATRON_ROOT:?SLIME_MEGATRON_ROOT must point to Megatron-LM in the slime runtime}"
 model_path="${SEARCH_R1_MODEL_PATH:?SEARCH_R1_MODEL_PATH must point to the frozen Qwen2.5-7B snapshot}"
@@ -64,8 +65,17 @@ case "${run_mode}" in
 esac
 trace_sample_rate="${SEARCH_R1_TRACE_SAMPLE_RATE:-${default_trace_sample_rate}}"
 
+if (( $# != 0 )); then
+  echo "The strict slime launcher does not accept positional overrides." >&2
+  exit 1
+fi
+
 if [[ "$(git -C "${slime_root}" rev-parse HEAD)" != "${expected_slime_commit}" ]]; then
   echo "slime checkout moved from ${expected_slime_commit}." >&2
+  exit 1
+fi
+if ! git -C "${slime_root}" diff --quiet || ! git -C "${slime_root}" diff --cached --quiet; then
+  echo "slime checkout has uncommitted tracked changes." >&2
   exit 1
 fi
 if [[ "$(basename -- "$(readlink -f "${model_path}")")" != "${expected_model_revision}" ]]; then
@@ -103,6 +113,11 @@ if [[ "${num_gpus}" != "8" ]]; then
 fi
 if [[ "${seed}" == *[!0-9]* || -z "${seed}" ]]; then
   echo "SEARCH_R1_SEED must be a non-negative integer." >&2
+  exit 1
+fi
+if [[ "${SEARCH_R1_PRINT_COMMAND:-0}" != 1 ]] && \
+  { ! git -C "${nemo_root}" diff --quiet || ! git -C "${nemo_root}" diff --cached --quiet; }; then
+  echo "NeMo comparison adapters have uncommitted tracked changes." >&2
   exit 1
 fi
 if [[ -e "${output_dir}/manifest.txt" ]]; then
@@ -275,4 +290,4 @@ runtime_env_json=$(printf \
 ray job submit \
   --address=http://127.0.0.1:8265 \
   --runtime-env-json="${runtime_env_json}" \
-  -- "${command[@]}" "${@}"
+  -- "${command[@]}"

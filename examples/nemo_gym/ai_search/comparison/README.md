@@ -255,6 +255,24 @@ computation. It streams response-only text, loss-mask-derived generated and
 observation token counts, native reward, status, and stable identity to a
 partial file, then publishes it atomically after validation finishes.
 
+Prepare the original fork's own frozen Python 3.10/CUDA 12.1 runtime before a
+real run. This is separate from the current-veRL container used for lightweight
+configuration checks:
+
+```bash
+UV_BIN=/path/to/uv-0.12.3 \
+ORIGINAL_SEARCH_R1_BOOTSTRAP_PYTHON=/path/to/python3.10 \
+ORIGINAL_SEARCH_R1_VENV=/fast/local/original-search-r1-venv \
+  bash examples/nemo_gym/ai_search/comparison/prepare_original_search_r1_runtime.sh
+```
+
+The preparation script installs the 177-package, hash-locked environment from
+`adapters/original-search-r1-runtime.lock`, checks dependency consistency, and
+imports Torch, FlashAttention, vLLM, Ray, Transformers, Prometheus, and
+TensorBoard. It refuses ARM, another uv version, an unmarked existing path, or
+any package/CUDA/ABI drift. Set `ORIGINAL_SEARCH_R1_PYTHON` to the resulting
+`bin/python` when launching.
+
 For current veRL, point `reward.custom_reward_function.path` at
 `framework_eval_adapters.py`, set its name to `verl_compute_score`, use one
 validation rollout, and enable `trainer.validation_data_dir`. The reward remains
@@ -347,7 +365,9 @@ separate Nsight run.
 Run the original Search-R1 fork from its patched comparison checkout with:
 
 ```bash
+UV_BIN=/path/to/uv-0.12.3 \
 ORIGINAL_SEARCH_R1_ROOT=/path/to/Search-R1-at-d5b269d \
+ORIGINAL_SEARCH_R1_PYTHON=/fast/local/original-search-r1-venv/bin/python \
 SEARCH_R1_MODEL_PATH=/path/to/models--Qwen--Qwen2.5-7B/snapshots/d149729... \
 SEARCH_R1_TRAIN_FILE=/path/to/four-way/train.parquet \
 SEARCH_R1_EVAL_FILE=/path/to/four-way/test.parquet \
@@ -364,6 +384,11 @@ validation export. It also writes sampled generation/retrieval spans, passes a
 provider-batch ID to E5, mirrors reduced metrics to raw JSONL and TensorBoard,
 and exposes driver metrics on Prometheus port 9108 by default. It is not
 labeled as an upstream Search-R1 release.
+
+The original manifest also records runtime-lock SHA-256
+`11a7246f36c9ea844e14b030631d8f8b1489cd245f663a5864bc8b3074d5f269`.
+A command resolved in a current-veRL image is only a configuration smoke; it
+cannot enter the original Search-R1 runtime or performance rows.
 
 After the timed process exits, mirror its TensorBoard source of truth into a
 local SwanLab directory without an account:

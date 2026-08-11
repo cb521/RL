@@ -5,7 +5,9 @@
 set -euo pipefail
 
 comparison_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+nemo_root=$(cd -- "${comparison_dir}/../../../.." && pwd)
 search_r1_root="${ORIGINAL_SEARCH_R1_ROOT:?ORIGINAL_SEARCH_R1_ROOT must point to the frozen patched Search-R1 checkout}"
+original_python="${ORIGINAL_SEARCH_R1_PYTHON:-python3}"
 model_path="${SEARCH_R1_MODEL_PATH:?SEARCH_R1_MODEL_PATH must point to the frozen Qwen2.5-7B snapshot}"
 train_file="${SEARCH_R1_TRAIN_FILE:?SEARCH_R1_TRAIN_FILE must point to four_way_train/train.parquet}"
 eval_file="${SEARCH_R1_EVAL_FILE:?SEARCH_R1_EVAL_FILE must point to four_way_eval/test.parquet}"
@@ -18,6 +20,7 @@ num_gpus="${SEARCH_R1_NUM_GPUS:-8}"
 expected_upstream_base=598e61bd1d36895726d28a8d06b3a15bed19f5d3
 expected_patched_head=d5b269d2f5298702e6b8c23ab2e6de435b66f37e
 expected_patch_sha256=9fc04e2d0775258f0b69d5e812d9a99f69fd90f23e5a6f36ed981540d256f455
+expected_runtime_lock_sha256=11a7246f36c9ea844e14b030631d8f8b1489cd245f663a5864bc8b3074d5f269
 expected_model_revision=d149729398750b98c0af14eb82c78cfe92750796
 expected_train_sha256=64325c44a1ac79c53fc70ad36551e34b4d2ac0fa79cf0d3cca1c4d244bdeaa39
 expected_eval_sha256=7c7d10d003dce8b0c6c2c0c4177974d0767cd2a380123faf6ee51473bc8e2461
@@ -70,8 +73,14 @@ case "${run_mode}" in
 esac
 trace_sample_rate="${SEARCH_R1_TRACE_SAMPLE_RATE:-${default_trace_sample_rate}}"
 prometheus_port="${SEARCH_R1_PROMETHEUS_PORT:-9108}"
+runtime_lock="${comparison_dir}/adapters/original-search-r1-runtime.lock"
 # The old trainer starts at global step 1 and stops after incrementing it.
 trainer_stop_step=$((total_steps + 1))
+
+if (( $# != 0 )); then
+  echo "The strict original Search-R1 launcher does not accept positional overrides." >&2
+  exit 1
+fi
 
 actual_patched_head="$(git -C "${search_r1_root}" rev-parse HEAD)"
 if ! git -C "${search_r1_root}" merge-base --is-ancestor \
@@ -100,6 +109,8 @@ for required_file in \
   "${train_file}" \
   "${eval_file}" \
   "${search_r1_root}/verl/trainer/main_ppo.py" \
+  "${runtime_lock}" \
+  "${comparison_dir}/prepare_original_search_r1_runtime.sh" \
   "${comparison_dir}/original_search_r1_export.py"; do
   if [[ ! -f "${required_file}" ]]; then
     echo "Missing aligned original Search-R1 artifact: ${required_file}" >&2
@@ -108,6 +119,7 @@ for required_file in \
 done
 printf '%s  %s\n' "${expected_train_sha256}" "${train_file}" | sha256sum --check --status
 printf '%s  %s\n' "${expected_eval_sha256}" "${eval_file}" | sha256sum --check --status
+printf '%s  %s\n' "${expected_runtime_lock_sha256}" "${runtime_lock}" | sha256sum --check --status
 if [[ "${retriever_url}" != http://*/retrieve && "${retriever_url}" != https://*/retrieve ]]; then
   echo "SEARCH_R1_RETRIEVER_URL must be an HTTP(S) /retrieve endpoint." >&2
   exit 1
@@ -124,6 +136,31 @@ if [[ "${prometheus_port}" == *[!0-9]* || -z "${prometheus_port}" ]] || \
   (( prometheus_port < 1 || prometheus_port > 65535 )); then
   echo "SEARCH_R1_PROMETHEUS_PORT must be an integer in [1, 65535]." >&2
   exit 1
+fi
+runtime_python_path=$(command -v "${original_python}" || true)
+if [[ -z "${runtime_python_path}" || ! -x "${runtime_python_path}" ]]; then
+  echo "Cannot execute ORIGINAL_SEARCH_R1_PYTHON=${original_python}." >&2
+  exit 1
+fi
+if [[ "${SEARCH_R1_PRINT_COMMAND:-0}" != 1 ]]; then
+  runtime_root=$(cd -- "$(dirname -- "${runtime_python_path}")/.." && pwd)
+  runtime_marker="${runtime_root}/.original-search-r1-runtime"
+  if [[ ! -f "${runtime_marker}" ]]; then
+    echo "Prepare ORIGINAL_SEARCH_R1_PYTHON with prepare_original_search_r1_runtime.sh first." >&2
+    exit 1
+  fi
+  ORIGINAL_SEARCH_R1_VENV="${runtime_root}" \
+  ORIGINAL_SEARCH_R1_REQUIRE_GPU=1 \
+    bash "${comparison_dir}/prepare_original_search_r1_runtime.sh"
+  visible_gpus=$("${runtime_python_path}" -c 'import torch; print(torch.cuda.device_count())')
+  if [[ "${visible_gpus}" != "${num_gpus}" ]]; then
+    echo "Expected ${num_gpus} visible training GPUs, found ${visible_gpus}." >&2
+    exit 1
+  fi
+  if ! git -C "${nemo_root}" diff --quiet || ! git -C "${nemo_root}" diff --cached --quiet; then
+    echo "NeMo comparison adapters have uncommitted tracked changes." >&2
+    exit 1
+  fi
 fi
 if [[ -e "${output_dir}/manifest.txt" ]]; then
   echo "SEARCH_R1_OUTPUT_DIR already contains a run manifest: ${output_dir}" >&2
@@ -152,6 +189,7 @@ export PYTHONUNBUFFERED=1
   printf 'source_patched_head=%s\n' "${actual_patched_head}"
   printf 'reference_patch_head=%s\n' "${expected_patched_head}"
   printf 'source_patch_sha256=%s\n' "${actual_patch_sha256}"
+  printf 'runtime_lock_sha256=%s\nruntime_python=%s\n' "${expected_runtime_lock_sha256}" "${runtime_python_path}"
   printf 'adapter_commit=%s\n' "$(git -C "${comparison_dir}" rev-parse HEAD)"
   printf 'model_revision=%s\n' "${expected_model_revision}"
   printf 'train_sha256=%s\neval_sha256=%s\n' "${expected_train_sha256}" "${expected_eval_sha256}"
@@ -170,7 +208,7 @@ export PYTHONUNBUFFERED=1
 } > "${output_dir}/manifest.txt"
 
 command=(
-  python3 -m verl.trainer.main_ppo
+  "${runtime_python_path}" -m verl.trainer.main_ppo
   "data.train_files=${train_file}"
   "data.val_files=${eval_file}"
   data.train_data_num=null
@@ -245,4 +283,4 @@ if [[ "${SEARCH_R1_PRINT_COMMAND:-0}" == "1" ]]; then
 fi
 
 cd "${search_r1_root}"
-exec "${command[@]}" "${@}"
+exec "${command[@]}"

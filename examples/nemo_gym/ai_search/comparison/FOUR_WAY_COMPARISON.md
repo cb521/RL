@@ -36,7 +36,10 @@ The original Search-R1 patch commits are comparison artifacts, not upstream
 releases. They add timing and token counters, align the outer-step scheduler
 and agent-turn boundary, export validation predictions, and make final
 validation optional for short performance runs. Each manifest records both
-the untouched upstream base and the exact patch head.
+the untouched upstream base and the exact patch head. Formal original-fork
+runs use the dedicated Python 3.10/CUDA 12.1 lock at SHA-256
+`11a7246f36c9ea844e14b030631d8f8b1489cd245f663a5864bc8b3074d5f269`;
+resolving its Hydra config inside a current-veRL image is not runtime evidence.
 
 ## Verified native differences
 

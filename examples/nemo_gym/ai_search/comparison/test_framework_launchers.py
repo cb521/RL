@@ -17,6 +17,15 @@ ORIGINAL_SEARCH_R1_LAUNCHER = COMPARISON_DIR / "run_original_search_r1.sh"
 ORIGINAL_SEARCH_R1_PATCH = (
     COMPARISON_DIR / "adapters" / "original-search-r1-comparison.patch"
 )
+ORIGINAL_SEARCH_R1_RUNTIME_INPUT = (
+    COMPARISON_DIR / "adapters" / "original-search-r1-runtime.in"
+)
+ORIGINAL_SEARCH_R1_RUNTIME_LOCK = (
+    COMPARISON_DIR / "adapters" / "original-search-r1-runtime.lock"
+)
+ORIGINAL_SEARCH_R1_RUNTIME_PREP = (
+    COMPARISON_DIR / "prepare_original_search_r1_runtime.sh"
+)
 CURRENT_VERL_LAUNCHER = COMPARISON_DIR / "run_current_verl_search_r1.sh"
 SLIME_LAUNCHER = COMPARISON_DIR / "run_slime_search_r1.sh"
 
@@ -29,6 +38,7 @@ def test_framework_launchers_have_valid_bash_syntax() -> None:
     for launcher in (
         NEMO_SEARCH_R1_LAUNCHER,
         ORIGINAL_SEARCH_R1_LAUNCHER,
+        ORIGINAL_SEARCH_R1_RUNTIME_PREP,
         CURRENT_VERL_LAUNCHER,
         SLIME_LAUNCHER,
     ):
@@ -81,6 +91,7 @@ def test_original_search_r1_launcher_freezes_aligned_protocol() -> None:
         "expected_upstream_base=598e61bd1d36895726d28a8d06b3a15bed19f5d3",
         "expected_patched_head=d5b269d2f5298702e6b8c23ab2e6de435b66f37e",
         "expected_patch_sha256=9fc04e2d0775258f0b69d5e812d9a99f69fd90f23e5a6f36ed981540d256f455",
+        "expected_runtime_lock_sha256=11a7246f36c9ea844e14b030631d8f8b1489cd245f663a5864bc8b3074d5f269",
         "expected_model_revision=d149729398750b98c0af14eb82c78cfe92750796",
         "expected_train_sha256=64325c44a1ac79c53fc70ad36551e34b4d2ac0fa79cf0d3cca1c4d244bdeaa39",
         "expected_eval_sha256=7c7d10d003dce8b0c6c2c0c4177974d0767cd2a380123faf6ee51473bc8e2461",
@@ -102,6 +113,10 @@ def test_original_search_r1_launcher_freezes_aligned_protocol() -> None:
         'export AI_SEARCH_METRICS_PATH="${output_dir}/observability/step-metrics.jsonl"',
         'export AI_SEARCH_TENSORBOARD_DIR="${output_dir}/tensorboard"',
         'export AI_SEARCH_PROMETHEUS_PORT="${prometheus_port}"',
+        'original_python="${ORIGINAL_SEARCH_R1_PYTHON:-python3}"',
+        "prepare_original_search_r1_runtime.sh first",
+        'ORIGINAL_SEARCH_R1_VENV="${runtime_root}"',
+        "The strict original Search-R1 launcher does not accept positional overrides.",
         '"trainer.logger=[\'console\',\'local\']"',
         "max_turns=4",
         "retriever.topk=3",
@@ -109,6 +124,42 @@ def test_original_search_r1_launcher_freezes_aligned_protocol() -> None:
     for fragment in required_fragments:
         assert fragment in source
     assert 'if [[ "${num_gpus}" != "8" ]]' in source
+
+
+def test_original_search_r1_runtime_is_hash_locked() -> None:
+    runtime_input = ORIGINAL_SEARCH_R1_RUNTIME_INPUT.read_bytes()
+    runtime_lock = ORIGINAL_SEARCH_R1_RUNTIME_LOCK.read_bytes()
+    assert hashlib.sha256(runtime_input).hexdigest() == (
+        "c6262fbcd6b5d39cb59589e96a675103fb5da39d0bdccecc3171eb9b34019c49"
+    )
+    assert hashlib.sha256(runtime_lock).hexdigest() == (
+        "11a7246f36c9ea844e14b030631d8f8b1489cd245f663a5864bc8b3074d5f269"
+    )
+    source = runtime_lock.decode()
+    for requirement in (
+        "flash-attn @ https://github.com/Dao-AILab/flash-attention/",
+        "prometheus-client==0.21.1",
+        "ray==2.10.0",
+        "tensorboard==2.17.1",
+        "tensordict==0.5.0",
+        "torch==2.4.0+cu121",
+        "torchvision==0.19.0+cu121",
+        "transformers==4.47.1",
+        "vllm==0.6.3",
+    ):
+        assert requirement in source
+    prep = _read(ORIGINAL_SEARCH_R1_RUNTIME_PREP)
+    for fragment in (
+        "expected_uv_version='uv 0.12.3 (x86_64-unknown-linux-gnu)'",
+        "--torch-backend cu121",
+        "--require-hashes",
+        'if [[ "$(uname -m)" != x86_64 ]]',
+        'if torch._C._GLIBCXX_USE_CXX11_ABI is not False:',
+        "ORIGINAL_SEARCH_R1_RUNTIME_CREATE_PASS",
+        "ORIGINAL_SEARCH_R1_RUNTIME_REUSE_PASS",
+    ):
+        assert fragment in prep
+    assert "--seed" not in prep
 
 
 def test_original_search_r1_patch_is_frozen_and_observable() -> None:
@@ -170,6 +221,7 @@ def test_current_verl_launcher_freezes_aligned_protocol() -> None:
         'export AI_SEARCH_TRACE_PATH="${output_dir}/trajectory-spans.jsonl"',
         "printf 'trace_sample_rate=%s\\n' \"${AI_SEARCH_TRACE_SAMPLE_RATE}\"",
         "SEARCH_R1_OUTPUT_DIR already contains a run manifest",
+        "The strict current-veRL launcher does not accept positional overrides.",
     )
     for fragment in required_fragments:
         assert fragment in source
@@ -213,11 +265,24 @@ def test_slime_launcher_freezes_aligned_protocol() -> None:
         'export AI_SEARCH_TRACE_PATH="${output_dir}/trajectory-spans.jsonl"',
         '\"AI_SEARCH_TRACE_SAMPLE_RATE\":\"%s\"',
         "SEARCH_R1_OUTPUT_DIR already contains a run manifest",
+        "The strict slime launcher does not accept positional overrides.",
     )
     for fragment in required_fragments:
         assert fragment in source
     assert 'if [[ "${num_gpus}" != "8" ]]' in source
     assert "pkill" not in source
+
+
+def test_strict_framework_launchers_reject_positional_overrides() -> None:
+    for launcher in (
+        NEMO_SEARCH_R1_LAUNCHER,
+        ORIGINAL_SEARCH_R1_LAUNCHER,
+        CURRENT_VERL_LAUNCHER,
+        SLIME_LAUNCHER,
+    ):
+        source = _read(launcher)
+        assert "does not accept positional overrides" in source
+        assert '"${@}"' not in source
 
 
 def test_slime_eval_template_uses_runtime_common_dataset() -> None:

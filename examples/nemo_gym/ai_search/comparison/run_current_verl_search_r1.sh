@@ -5,6 +5,7 @@
 set -euo pipefail
 
 comparison_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+nemo_root=$(cd -- "${comparison_dir}/../../../.." && pwd)
 verl_root="${CURRENT_VERL_ROOT:?CURRENT_VERL_ROOT must point to the frozen veRL checkout}"
 model_path="${SEARCH_R1_MODEL_PATH:?SEARCH_R1_MODEL_PATH must point to the frozen Qwen2.5-7B snapshot}"
 train_file="${SEARCH_R1_TRAIN_FILE:?SEARCH_R1_TRAIN_FILE must point to four_way_train/train.parquet}"
@@ -69,8 +70,17 @@ case "${run_mode}" in
 esac
 trace_sample_rate="${SEARCH_R1_TRACE_SAMPLE_RATE:-${default_trace_sample_rate}}"
 
+if (( $# != 0 )); then
+  echo "The strict current-veRL launcher does not accept positional overrides." >&2
+  exit 1
+fi
+
 if [[ "$(git -C "${verl_root}" rev-parse HEAD)" != "${expected_verl_commit}" ]]; then
   echo "Current veRL checkout moved from ${expected_verl_commit}." >&2
+  exit 1
+fi
+if ! git -C "${verl_root}" diff --quiet || ! git -C "${verl_root}" diff --cached --quiet; then
+  echo "Current veRL checkout has uncommitted tracked changes." >&2
   exit 1
 fi
 if [[ "$(basename -- "$(readlink -f "${model_path}")")" != "${expected_model_revision}" ]]; then
@@ -100,6 +110,11 @@ if [[ "${num_gpus}" != "8" ]]; then
 fi
 if [[ "${seed}" == *[!0-9]* || -z "${seed}" ]]; then
   echo "SEARCH_R1_SEED must be a non-negative integer." >&2
+  exit 1
+fi
+if [[ "${SEARCH_R1_PRINT_COMMAND:-0}" != 1 ]] && \
+  { ! git -C "${nemo_root}" diff --quiet || ! git -C "${nemo_root}" diff --cached --quiet; }; then
+  echo "NeMo comparison adapters have uncommitted tracked changes." >&2
   exit 1
 fi
 if [[ -e "${output_dir}/manifest.txt" ]]; then
@@ -241,4 +256,4 @@ if [[ "${SEARCH_R1_PRINT_COMMAND:-0}" == "1" ]]; then
   exit 0
 fi
 
-exec "${command[@]}" "${@}"
+exec "${command[@]}"
