@@ -32,10 +32,19 @@ _COUNT_KEYS = ("Num Calls", "Instances", "Count", "Range Instances")
 def worker_kind(path: Path) -> str:
     """Map a Ray Nsight filename to a stable implementation role."""
     name = path.name.lower()
+    if "original_search_r1_worker" in name:
+        return "original_hybrid_actor_rollout_ref"
+    if "slime_actor" in name:
+        return "slime_training_actor"
     if "policy" in name:
         return "policy"
     if "vllm" in name or "generation" in name:
         return "generation"
+    if "worker_process_" in name:
+        # Current veRL uses this generic Ray filename for every profiled worker.
+        # Do not claim a narrower role from a PID-only name; the run manifest
+        # records that our configuration profiles colocated actor/ref workers.
+        return "verl_worker_unspecified"
     return "other"
 
 

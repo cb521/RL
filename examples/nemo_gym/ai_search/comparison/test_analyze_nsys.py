@@ -13,6 +13,18 @@ from analyze_nsys import aggregate_tables, worker_kind
 def test_worker_kind_uses_stable_roles() -> None:
     assert worker_kind(Path("dtensor_policy_worker_2:3_10.nsys-rep")) == "policy"
     assert worker_kind(Path("vllm_generation_worker_2:3_11.nsys-rep")) == "generation"
+    assert (
+        worker_kind(Path("original_search_r1_worker_456.nsys-rep"))
+        == "original_hybrid_actor_rollout_ref"
+    )
+    assert (
+        worker_kind(Path("slime_actor_789.nsys-rep"))
+        == "slime_training_actor"
+    )
+    assert (
+        worker_kind(Path("worker_process_123.1.nsys-rep"))
+        == "verl_worker_unspecified"
+    )
     assert worker_kind(Path("unknown_12.nsys-rep")) == "other"
 
 
