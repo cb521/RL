@@ -22,6 +22,7 @@ import subprocess
 import threading
 import time
 from abc import ABC, abstractmethod
+from collections import deque
 from typing import Any, Callable, Mapping, NotRequired, Optional, TypedDict
 
 import mlflow
@@ -442,13 +443,35 @@ class SwanlabLogger(LoggerInterface):
             cfg (SwanlabConfig): Configuration for the Swanlab run (e.g., project and name).
             log_dir (Optional[str]): Optional offline log directory passed to Swanlab's init.
         """
-        # Local SwanLab persists through SQLite and is not safe for concurrent
-        # writes from the training loop and the GPU-monitoring thread.
+        # SwanLab local creates its SQLite/Peewee state on this thread. Calls
+        # from the Ray GPU-monitor thread fail even when they do not overlap a
+        # main-thread call, so background writes are queued for the owner.
+        self._owner_thread_id = threading.get_ident()
         self._write_lock = threading.RLock()
+        self._pending_writes: deque[Callable[[], None]] = deque()
         self.run = swanlab.init(**cfg, logdir=log_dir)
         print(
             f"Initialized SwanlabLogger for project {cfg.get('project')}, run {cfg.get('name')} (with offline logdir={log_dir})"
         )
+
+    def _write_on_owner_thread(self, write: Callable[[], None]) -> None:
+        """Run SwanLab writes on the thread that initialized its local store."""
+        with self._write_lock:
+            if threading.get_ident() != self._owner_thread_id:
+                self._pending_writes.append(write)
+                return
+
+            while self._pending_writes:
+                self._pending_writes.popleft()()
+            write()
+
+    def finish(self) -> None:
+        """Flush writes queued by monitoring threads before logger teardown."""
+        if threading.get_ident() != self._owner_thread_id:
+            raise RuntimeError("SwanlabLogger.finish() must run on its owner thread")
+        with self._write_lock:
+            while self._pending_writes:
+                self._pending_writes.popleft()()
 
     def log_metrics(
         self,
@@ -472,8 +495,8 @@ class SwanlabLogger(LoggerInterface):
                 for k, v in metrics.items()
             }
 
-        with self._write_lock:
-            self.run.log(metrics, step=step)
+        metrics = dict(metrics)
+        self._write_on_owner_thread(lambda: self.run.log(metrics, step=step))
 
     def log_hyperparams(self, params: Mapping[str, Any]) -> None:
         """Update the Swanlab run configuration with the provided hyperparameters.
@@ -481,8 +504,10 @@ class SwanlabLogger(LoggerInterface):
         Parameters:
             params (Mapping[str, Any]): Mapping of hyperparameter names to values to store in the run configuration.
         """
-        with self._write_lock:
-            self.run.config.update(params, allow_val_change=True)
+        params = dict(params)
+        self._write_on_owner_thread(
+            lambda: self.run.config.update(params, allow_val_change=True)
+        )
 
     def log_plot(self, figure: plt.Figure, step: int, name: str) -> None:
         """Log a plot to swanlab.
@@ -491,8 +516,9 @@ class SwanlabLogger(LoggerInterface):
             figure: Matplotlib figure to log
             step: Global step value
         """
-        with self._write_lock:
-            self.run.log({name: swanlab.Image(figure)}, step=step)
+        self._write_on_owner_thread(
+            lambda: self.run.log({name: swanlab.Image(figure)}, step=step)
+        )
 
     def log_histogram(self, histogram: list[Any], step: int, name: str) -> None:
         """Log histogram metrics to swanlab."""

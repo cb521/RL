@@ -567,12 +567,14 @@ class TestSwanlabLogger:
         mock_run.config.update.assert_called_once_with(params, allow_val_change=True)
 
     @patch("nemo_rl.utils.logger.swanlab")
-    def test_concurrent_writes_are_serialized(self, mock_swanlab):
-        """SwanLab local storage must not receive overlapping SQLite writes."""
+    def test_background_writes_run_on_owner_thread(self, mock_swanlab):
+        """SwanLab local storage must only be written by its creator thread."""
         logger = SwanlabLogger({})
+        owner_thread_id = threading.get_ident()
         state_lock = threading.Lock()
         active_writes = 0
         peak_writes = 0
+        write_thread_ids = []
 
         def record_write(*args, **kwargs):
             del args, kwargs
@@ -580,6 +582,7 @@ class TestSwanlabLogger:
             with state_lock:
                 active_writes += 1
                 peak_writes = max(peak_writes, active_writes)
+                write_thread_ids.append(threading.get_ident())
             time.sleep(0.01)
             with state_lock:
                 active_writes -= 1
@@ -587,14 +590,15 @@ class TestSwanlabLogger:
         mock_run = mock_swanlab.init.return_value
         mock_run.log.side_effect = record_write
         mock_run.config.update.side_effect = record_write
+
+        def background_write(index):
+            if index % 2 == 0:
+                logger.log_metrics({f"loss_{index}": 1.0}, step=index)
+            else:
+                logger.log_hyperparams({f"seed_{index}": 42})
+
         threads = [
-            threading.Thread(
-                target=(
-                    (lambda: logger.log_metrics({"loss": 1.0}, step=1))
-                    if index % 2 == 0
-                    else (lambda: logger.log_hyperparams({"seed": 42}))
-                )
-            )
+            threading.Thread(target=background_write, args=(index,))
             for index in range(8)
         ]
         for thread in threads:
@@ -602,7 +606,31 @@ class TestSwanlabLogger:
         for thread in threads:
             thread.join()
 
+        mock_run.log.assert_not_called()
+        mock_run.config.update.assert_not_called()
+
+        logger.log_metrics({"owner": 1.0}, step=8)
+
         assert peak_writes == 1
+        assert len(write_thread_ids) == 9
+        assert set(write_thread_ids) == {owner_thread_id}
+        assert mock_run.log.call_count == 5
+        assert mock_run.config.update.call_count == 4
+
+    @patch("nemo_rl.utils.logger.swanlab")
+    def test_finish_flushes_background_writes(self, mock_swanlab):
+        """Queued monitoring metrics are not lost when training exits."""
+        logger = SwanlabLogger({})
+        thread = threading.Thread(
+            target=lambda: logger.log_metrics({"gpu_util": 0.5}, step=3)
+        )
+        thread.start()
+        thread.join()
+
+        mock_run = mock_swanlab.init.return_value
+        mock_run.log.assert_not_called()
+        logger.finish()
+        mock_run.log.assert_called_once_with({"gpu_util": 0.5}, step=3)
 
 
 class TestMLflowLogger:
