@@ -21,6 +21,7 @@ from unittest.mock import MagicMock, call, patch
 
 import pytest
 import torch
+from wandb import Histogram
 
 from nemo_rl.utils.logger import (
     Logger,
@@ -194,6 +195,18 @@ class TestTensorboardLogger:
         assert mock_writer.add_scalar.call_count == 2
         mock_writer.add_scalar.assert_any_call("train/loss", 0.5, 10)
         mock_writer.add_scalar.assert_any_call("train/accuracy", 0.8, 10)
+
+    @patch("nemo_rl.utils.logger.SummaryWriter")
+    def test_log_metrics_writes_wandb_histogram(self, mock_summary_writer, temp_dir):
+        """Pre-binned rollout histograms remain available in TensorBoard."""
+        logger = TensorboardLogger({}, log_dir=temp_dir)
+
+        logger.log_metrics({"reward/histogram": Histogram([0.0, 0.5, 1.0])}, step=4)
+
+        kwargs = mock_summary_writer.return_value.add_histogram_raw.call_args.kwargs
+        assert kwargs["global_step"] == 4
+        assert kwargs["num"] == 3
+        assert len(kwargs["bucket_limits"]) == len(kwargs["bucket_counts"])
 
     @patch("nemo_rl.utils.logger.SummaryWriter")
     def test_log_hyperparams(self, mock_summary_writer, temp_dir):
@@ -508,6 +521,23 @@ class TestSwanlabLogger:
         mock_run = mock_swanlab.init.return_value
         expected_metrics = {"train/loss": 0.5, "train/accuracy": 0.8}
         mock_run.log.assert_called_once_with(expected_metrics, step=step)
+
+    @patch("nemo_rl.utils.logger.swanlab")
+    def test_log_metrics_converts_wandb_histogram(self, mock_swanlab):
+        """SwanLab receives a native ECharts bar instead of a W&B object."""
+        chart = MagicMock()
+        chart.add_xaxis.return_value = chart
+        chart.add_yaxis.return_value = chart
+        mock_swanlab.echarts.Bar.return_value = chart
+        logger = SwanlabLogger({})
+
+        logger.log_metrics({"reward/histogram": Histogram([0.0, 0.5, 1.0])}, step=4)
+
+        logged_metrics = mock_swanlab.init.return_value.log.call_args.args[0]
+        assert logged_metrics == {"reward/histogram": chart}
+        mock_swanlab.echarts.Bar.assert_called_once_with()
+        assert len(chart.add_xaxis.call_args.args[0]) == 64
+        assert sum(chart.add_yaxis.call_args.args[1]) == 3
 
     @patch("nemo_rl.utils.logger.swanlab")
     def test_log_metrics_with_step_metric(self, mock_swanlab):

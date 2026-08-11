@@ -42,13 +42,28 @@ def test_analyze_traces_links_resource_and_retriever_batches(tmp_path) -> None:
                 "operation": "retrieve",
                 "attributes": {"provider_batch_id": "batch-1", "encode_ms": 3.0},
             },
+            base
+            | {
+                "trace_id": "session-1",
+                "component": "search_r1_agent",
+                "operation": "rollout",
+                "attributes": {},
+            },
+            base
+            | {
+                "trace_id": "retriever-batch:smoke",
+                "component": "search_r1_e5",
+                "operation": "retrieve",
+                "attributes": {"provider_batch_id": "smoke"},
+            },
         ],
     )
 
     report = analyze_traces([trace_path])
-    assert report["span_count"] == 2
+    assert report["span_count"] == 3
     assert report["trajectory_count"] == 1
     assert report["provider_batch_links"]["linked_batches"] == 1
+    assert report["provider_batch_links"]["retriever_batches"] == 1
     assert report["operations_ms"]["resource_server/search"]["p95"] == 10.0
 
 
@@ -117,6 +132,48 @@ def test_analyze_prometheus_calculates_interval_deltas(tmp_path) -> None:
     }
     assert not any("_created" in key for key in report["gauge_summaries"])
     assert report["duration_seconds"] == 2.0
+
+
+def test_analyze_prometheus_separates_interior_and_teardown_errors(tmp_path) -> None:
+    metrics_path = tmp_path / "prometheus.jsonl"
+    _write_jsonl(
+        metrics_path,
+        [
+            {
+                "endpoint": "resource",
+                "scraped_unix_ns": 1,
+                "scrape_duration_ms": 2.0,
+                "samples": [],
+            },
+            {
+                "endpoint": "resource",
+                "scraped_unix_ns": 2,
+                "error_type": "TimeoutError",
+                "samples": [],
+            },
+            {
+                "endpoint": "resource",
+                "scraped_unix_ns": 3,
+                "scrape_duration_ms": 4.0,
+                "samples": [],
+            },
+            {
+                "endpoint": "resource",
+                "scraped_unix_ns": 4,
+                "error_type": "URLError",
+                "samples": [],
+            },
+        ],
+    )
+
+    health = analyze_prometheus([metrics_path])["endpoint_health"]["resource"]
+    assert health["successful_snapshots"] == 2
+    assert health["interior_error_snapshots"] == 1
+    assert health["trailing_error_snapshots"] == 1
+    assert health["success_rate"] == 0.5
+    assert health["max_interior_consecutive_errors"] == 1
+    assert health["error_types"] == {"TimeoutError": 1, "URLError": 1}
+    assert health["scrape_duration_ms"]["mean"] == 3.0
 
 
 def test_parse_training_console_excludes_warmup(tmp_path) -> None:

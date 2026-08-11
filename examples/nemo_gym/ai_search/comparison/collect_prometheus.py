@@ -138,9 +138,16 @@ def main() -> None:
         while not stopped:
             loop_started = time.monotonic()
             for endpoint in endpoints:
+                if stopped:
+                    break
                 try:
                     snapshot = fetch(endpoint, include, args.timeout_seconds)
                 except Exception as error:
+                    # A parent process commonly stops the collector after the
+                    # instrumented service has begun teardown. Do not turn an
+                    # intentional SIGTERM into a synthetic endpoint failure.
+                    if stopped:
+                        break
                     consecutive_errors[endpoint.name] += 1
                     snapshot = {
                         "schema_version": 1,
@@ -160,6 +167,8 @@ def main() -> None:
                 output.write(json.dumps(snapshot, sort_keys=True) + "\n")
                 output.flush()
 
+            if stopped:
+                break
             if args.duration_seconds and (
                 time.monotonic() - started >= args.duration_seconds
             ):

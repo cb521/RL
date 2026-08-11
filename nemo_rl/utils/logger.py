@@ -40,6 +40,7 @@ from rich.console import Console
 from rich.logging import RichHandler
 from rich.panel import Panel
 from torch.utils.tensorboard import SummaryWriter
+from wandb import Histogram as WandbHistogram
 
 from nemo_rl.data.interfaces import LLMMessageLogType
 from nemo_rl.distributed.batched_data_dict import BatchedDataDict
@@ -176,6 +177,10 @@ class TensorboardLogger(LoggerInterface):
             if prefix:
                 name = f"{prefix}/{name}"
 
+            if isinstance(value, WandbHistogram):
+                self._log_wandb_histogram(value, step, name)
+                continue
+
             scalar = self._coerce_to_scalar(value)
             if scalar is None:
                 print(
@@ -190,9 +195,35 @@ class TensorboardLogger(LoggerInterface):
                 print(f"Warning: Failed to log metric '{name}' to TensorBoard: {e}")
                 continue
 
+    def _log_wandb_histogram(
+        self, histogram: WandbHistogram, step: int, name: str
+    ) -> None:
+        """Write an already-binned W&B histogram to TensorBoard."""
+        counts = np.asarray(histogram.histogram, dtype=np.float64)
+        bins = np.asarray(histogram.bins, dtype=np.float64)
+        if bins.size != counts.size + 1:
+            print(
+                f"Warning: Skipping malformed histogram '{name}' for TensorBoard "
+                f"({counts.size} counts, {bins.size} bin edges)"
+            )
+            return
+
+        centers = (bins[:-1] + bins[1:]) / 2
+        self.writer.add_histogram_raw(
+            name,
+            min=float(bins[0]),
+            max=float(bins[-1]),
+            num=int(counts.sum()),
+            sum=float(np.dot(counts, centers)),
+            sum_squares=float(np.dot(counts, centers**2)),
+            bucket_limits=bins[1:].tolist(),
+            bucket_counts=counts.tolist(),
+            global_step=step,
+        )
+
     def log_histogram(self, histogram: list[Any], step: int, name: str) -> None:
         """Log histogram metrics to Tensorboard."""
-        return
+        self.writer.add_histogram(name, histogram, step)
 
     def log_hyperparams(self, params: Mapping[str, Any]) -> None:
         """Log hyperparameters to Tensorboard.
@@ -495,8 +526,21 @@ class SwanlabLogger(LoggerInterface):
                 for k, v in metrics.items()
             }
 
-        metrics = dict(metrics)
+        metrics = {
+            name: self._to_swanlab_value(value) for name, value in metrics.items()
+        }
         self._write_on_owner_thread(lambda: self.run.log(metrics, step=step))
+
+    @staticmethod
+    def _to_swanlab_value(value: Any) -> Any:
+        """Convert W&B-only metric objects to SwanLab-native equivalents."""
+        if not isinstance(value, WandbHistogram):
+            return value
+
+        counts = [int(count) for count in value.histogram]
+        bins = [float(edge) for edge in value.bins]
+        labels = [f"{left:.4g}–{right:.4g}" for left, right in zip(bins[:-1], bins[1:])]
+        return swanlab.echarts.Bar().add_xaxis(labels).add_yaxis("count", counts)
 
     def log_hyperparams(self, params: Mapping[str, Any]) -> None:
         """Update the Swanlab run configuration with the provided hyperparameters.
@@ -522,7 +566,8 @@ class SwanlabLogger(LoggerInterface):
 
     def log_histogram(self, histogram: list[Any], step: int, name: str) -> None:
         """Log histogram metrics to swanlab."""
-        return
+        value = self._to_swanlab_value(WandbHistogram(histogram))
+        self._write_on_owner_thread(lambda: self.run.log({name: value}, step=step))
 
 
 class GpuMetricSnapshot(TypedDict):

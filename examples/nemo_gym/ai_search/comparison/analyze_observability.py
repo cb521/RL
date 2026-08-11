@@ -68,45 +68,65 @@ def _read_jsonl(paths: Iterable[Path]) -> Iterable[dict[str, Any]]:
 
 
 def analyze_traces(paths: list[Path]) -> dict[str, Any]:
+    events = [event for event in _read_jsonl(paths) if event.get("event") == "span"]
     operation_durations: dict[str, list[float]] = defaultdict(list)
     attribute_values: dict[str, list[float]] = defaultdict(list)
     trace_bounds: dict[str, list[tuple[int, int]]] = defaultdict(list)
-    resource_batch_ids: set[str] = set()
+    resource_batch_ids = {
+        str(attributes["provider_batch_id"])
+        for event in events
+        if event.get("component") == "resource_server"
+        and isinstance((attributes := event.get("attributes")), dict)
+        and isinstance(attributes.get("provider_batch_id"), str)
+    }
     retriever_batch_ids: set[str] = set()
+    trajectory_trace_ids: set[str] = set()
     status_counts: dict[str, int] = defaultdict(int)
     span_count = 0
 
-    for event in _read_jsonl(paths):
-        if event.get("event") != "span":
+    for event in events:
+        component = str(event.get("component", "unknown"))
+        attributes = event.get("attributes")
+        batch_id = (
+            attributes.get("provider_batch_id")
+            if isinstance(attributes, dict)
+            else None
+        )
+        # A long-lived retriever trace can contain smoke probes and spans from
+        # earlier framework runs. When resource spans are present, retain only
+        # retriever work linked to this run's provider batches.
+        if (
+            component == "search_r1_e5"
+            and resource_batch_ids
+            and batch_id not in resource_batch_ids
+        ):
             continue
         span_count += 1
-        component = str(event.get("component", "unknown"))
         operation = str(event.get("operation", "unknown"))
         operation_durations[f"{component}/{operation}"].append(
             float(event["duration_ms"])
         )
+        if component == "search_r1_agent" and operation == "rollout":
+            trajectory_trace_ids.add(str(event.get("trace_id", "")))
         status_counts[str(event.get("status", "unknown"))] += 1
         trace_id = str(event.get("trace_id", ""))
         trace_bounds[trace_id].append(
             (int(event["start_unix_ns"]), int(event["end_unix_ns"]))
         )
-        attributes = event.get("attributes")
         if not isinstance(attributes, dict):
             continue
         for name, value in attributes.items():
             if name.endswith("_ms") and isinstance(value, (int, float)):
                 attribute_values[f"{component}/{operation}/{name}"].append(float(value))
-        batch_id = attributes.get("provider_batch_id")
         if not isinstance(batch_id, str):
             continue
-        if component == "resource_server":
-            resource_batch_ids.add(batch_id)
-        elif component == "search_r1_e5":
+        if component == "search_r1_e5":
             retriever_batch_ids.add(batch_id)
 
     trajectory_wall_ms = []
-    for trace_id, bounds in trace_bounds.items():
-        if trace_id.startswith("retriever-batch:") or not bounds:
+    for trace_id in sorted(trajectory_trace_ids):
+        bounds = trace_bounds[trace_id]
+        if not bounds:
             continue
         trajectory_wall_ms.append(
             (max(end for _, end in bounds) - min(start for start, _ in bounds))
@@ -144,6 +164,11 @@ def _series_key(name: str, labels: dict[str, str]) -> str:
 def analyze_prometheus(paths: list[Path]) -> dict[str, Any]:
     series: dict[str, list[tuple[int, float]]] = defaultdict(list)
     endpoints: set[str] = set()
+    endpoint_outcomes: dict[str, list[bool]] = defaultdict(list)
+    endpoint_error_types: dict[str, dict[str, int]] = defaultdict(
+        lambda: defaultdict(int)
+    )
+    scrape_durations_ms: dict[str, list[float]] = defaultdict(list)
     error_snapshots = 0
     snapshot_count = 0
 
@@ -153,7 +178,12 @@ def analyze_prometheus(paths: list[Path]) -> dict[str, Any]:
         endpoints.add(endpoint)
         if "error_type" in snapshot:
             error_snapshots += 1
+            endpoint_outcomes[endpoint].append(False)
+            endpoint_error_types[endpoint][str(snapshot["error_type"])] += 1
             continue
+        endpoint_outcomes[endpoint].append(True)
+        if "scrape_duration_ms" in snapshot:
+            scrape_durations_ms[endpoint].append(float(snapshot["scrape_duration_ms"]))
         timestamp = int(snapshot["scraped_unix_ns"])
         raw_samples = snapshot.get("samples", [])
         if not isinstance(raw_samples, list):
@@ -199,10 +229,54 @@ def analyze_prometheus(paths: list[Path]) -> dict[str, Any]:
     duration_seconds = (
         (max(timestamps) - min(timestamps)) / 1_000_000_000.0 if timestamps else 0.0
     )
+    endpoint_health = {}
+    for endpoint in sorted(endpoints):
+        outcomes = endpoint_outcomes[endpoint]
+        successful = sum(outcomes)
+        last_success = max(
+            (index for index, outcome in enumerate(outcomes) if outcome), default=-1
+        )
+        interior_errors = sum(
+            not outcome
+            for index, outcome in enumerate(outcomes)
+            if index < last_success
+        )
+        trailing_errors = sum(
+            not outcome
+            for index, outcome in enumerate(outcomes)
+            if index > last_success
+        )
+        longest_error_run = 0
+        longest_interior_error_run = 0
+        current_error_run = 0
+        for index, outcome in enumerate(outcomes):
+            if outcome:
+                current_error_run = 0
+                continue
+            current_error_run += 1
+            longest_error_run = max(longest_error_run, current_error_run)
+            if index < last_success:
+                longest_interior_error_run = max(
+                    longest_interior_error_run, current_error_run
+                )
+
+        endpoint_health[endpoint] = {
+            "snapshot_count": len(outcomes),
+            "successful_snapshots": successful,
+            "error_snapshots": len(outcomes) - successful,
+            "interior_error_snapshots": interior_errors,
+            "trailing_error_snapshots": trailing_errors,
+            "max_consecutive_errors": longest_error_run,
+            "max_interior_consecutive_errors": longest_interior_error_run,
+            "success_rate": successful / len(outcomes) if outcomes else 0.0,
+            "error_types": dict(sorted(endpoint_error_types[endpoint].items())),
+            "scrape_duration_ms": summarize(scrape_durations_ms[endpoint]),
+        }
     return {
         "snapshot_count": snapshot_count,
         "error_snapshots": error_snapshots,
         "endpoints": sorted(endpoints),
+        "endpoint_health": endpoint_health,
         "duration_seconds": duration_seconds,
         "counter_deltas": counter_deltas,
         "gauge_summaries": gauge_summaries,
