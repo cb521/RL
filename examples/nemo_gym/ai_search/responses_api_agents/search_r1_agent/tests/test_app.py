@@ -83,6 +83,21 @@ class _CharacterTokenizer:
         return "".join(chr(token_id) for token_id in token_ids)
 
 
+def test_config_accepts_local_tokenizer_path(tmp_path) -> None:
+    tokenizer_path = tmp_path / "model-snapshot"
+    config = SearchR1AgentConfig(
+        host="127.0.0.1",
+        port=8080,
+        entrypoint="app.py",
+        name="search_r1_agent",
+        resources_server=ResourcesServerRef(type="resources_servers", name="ai_search"),
+        model_server=ModelServerRef(type="responses_api_models", name="policy_model"),
+        tokenizer_name=str(tokenizer_path),
+    )
+
+    assert config.tokenizer_name == str(tokenizer_path)
+
+
 def _request() -> MagicMock:
     request = MagicMock(spec=Request)
     request.cookies = {}

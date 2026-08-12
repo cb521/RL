@@ -69,7 +69,7 @@ ai_search_search_r1_agent:
       max_turns: 4
       top_k: 3
       max_observation_tokens: 500
-      tokenizer_name: Qwen/Qwen2.5-7B
+      tokenizer_name: ${oc.env:SEARCH_R1_MODEL_PATH,Qwen/Qwen2.5-7B}
       datasets:
       - name: search_r1_train
         type: train

@@ -63,7 +63,7 @@ class SearchR1AgentConfig(BaseResponsesAPIAgentConfig):
     max_turns: int = Field(default=4, ge=1)
     top_k: Literal[3] = 3
     max_observation_tokens: Literal[500] = 500
-    tokenizer_name: Literal["Qwen/Qwen2.5-7B"] = "Qwen/Qwen2.5-7B"
+    tokenizer_name: str = "Qwen/Qwen2.5-7B"
 
 
 class SearchR1AgentRunRequest(BaseRunRequest):

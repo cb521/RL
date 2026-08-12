@@ -51,6 +51,26 @@ def test_search_r1_resources_allow_remote_retriever(monkeypatch) -> None:
     )
 
 
+def test_search_r1_agent_allows_local_tokenizer(monkeypatch, tmp_path: Path) -> None:
+    repo_root = Path(__file__).parents[4]
+    resources_config = (
+        repo_root
+        / "examples/nemo_gym/ai_search/resources_servers/ai_search/configs"
+        / "ai_search_search_r1.yaml"
+    )
+    tokenizer_path = tmp_path / "model-snapshot"
+
+    monkeypatch.setenv("SEARCH_R1_MODEL_PATH", str(tokenizer_path))
+    raw_config = OmegaConf.load(resources_config)
+    resolved_config = OmegaConf.to_container(raw_config, resolve=True)
+
+    assert isinstance(resolved_config, dict)
+    agent_config = resolved_config["ai_search_search_r1_agent"][
+        "responses_api_agents"
+    ]["search_r1_agent"]
+    assert agent_config["tokenizer_name"] == str(tokenizer_path)
+
+
 def test_observed_recipe_enables_local_capable_loggers() -> None:
     repo_root = Path(__file__).parents[4]
     recipe = (
