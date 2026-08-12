@@ -14,6 +14,7 @@ train_file="${SEARCH_R1_TRAIN_FILE:?SEARCH_R1_TRAIN_FILE must point to four_way_
 eval_file="${SEARCH_R1_EVAL_FILE:?SEARCH_R1_EVAL_FILE must point to four_way_eval/test.parquet}"
 retriever_url="${SEARCH_R1_RETRIEVER_URL:?SEARCH_R1_RETRIEVER_URL must point to the shared E5 /retrieve endpoint}"
 output_dir="${SEARCH_R1_OUTPUT_DIR:?SEARCH_R1_OUTPUT_DIR must be set}"
+ray_tmpdir="${SEARCH_R1_RAY_TMPDIR:-${output_dir}/ray}"
 run_mode="${SEARCH_R1_RUN_MODE:-smoke}"
 observability_mode="${SEARCH_R1_OBSERVABILITY_MODE:-clean}"
 seed="${SEARCH_R1_SEED:-42}"
@@ -147,6 +148,14 @@ if [[ "${retriever_url}" != http://*/retrieve && "${retriever_url}" != https://*
   echo "SEARCH_R1_RETRIEVER_URL must be an HTTP(S) /retrieve endpoint." >&2
   exit 1
 fi
+if [[ "${ray_tmpdir}" != /* ]]; then
+  echo "SEARCH_R1_RAY_TMPDIR must be an absolute path." >&2
+  exit 1
+fi
+if (( ${#ray_tmpdir} > 32 )); then
+  echo "SEARCH_R1_RAY_TMPDIR is too long for Ray Unix sockets: ${ray_tmpdir}" >&2
+  exit 1
+fi
 hardware_contract=eight-gpu
 if [[ "${num_gpus}" != "8" ]]; then
   if [[ "${run_mode}" != smoke ]] \
@@ -176,7 +185,7 @@ mkdir -p \
   "${output_dir}/common-eval" \
   "${output_dir}/debug-rollouts" \
   "${output_dir}/nsight-tmp" \
-  "${output_dir}/ray" \
+  "${ray_tmpdir}" \
   "${output_dir}/swanlab" \
   "${output_dir}/tensorboard"
 
@@ -248,6 +257,7 @@ export PYTHONUNBUFFERED=1
   printf 'timed_rollout_text_dump=%s\n' \
     "$([[ "${save_debug_rollouts}" == 1 ]] && echo campaign-only || echo disabled)"
   printf 'trace_path=%s\n' "${AI_SEARCH_TRACE_PATH:-disabled}"
+  printf 'ray_tmpdir=%s\n' "${ray_tmpdir}"
   printf 'trace_sample_rate=%s\n' "${AI_SEARCH_TRACE_SAMPLE_RATE:-disabled}"
   printf 'engine_prometheus_scope=%s\n' "${engine_prometheus_scope}"
   printf 'tensorboard_dir=%s\n' "${TENSORBOARD_DIR:-disabled}"
@@ -366,7 +376,7 @@ ray start \
   --head \
   --node-ip-address "${master_addr}" \
   --num-gpus "${num_gpus}" \
-  --temp-dir "${output_dir}/ray" \
+  --temp-dir "${ray_tmpdir}" \
   --disable-usage-stats
 trap 'ray stop --force >/dev/null 2>&1 || true' EXIT INT TERM
 

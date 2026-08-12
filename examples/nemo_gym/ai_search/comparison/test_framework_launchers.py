@@ -379,6 +379,9 @@ def test_slime_launcher_freezes_aligned_protocol() -> None:
         '"capture-range":"cudaProfilerApi"',
         "engine_prometheus_scope=not-collected-native-always-on",
         "engine_prometheus_scope=sglang-router-and-engine-http-servers",
+        'ray_tmpdir="${SEARCH_R1_RAY_TMPDIR:-${output_dir}/ray}"',
+        'if (( ${#ray_tmpdir} > 32 )); then',
+        '--temp-dir "${ray_tmpdir}"',
     )
     for fragment in required_fragments:
         assert fragment in source
