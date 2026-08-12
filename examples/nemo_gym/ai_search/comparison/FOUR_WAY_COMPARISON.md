@@ -130,7 +130,9 @@ data order, or fixed step-500 headline result.
   mini-batches in one outer step, matching the other three schedulers; the hook
   does not change gradients or optimizer work. A separate, frozen
   measurement-only patch brackets one outer step with an NVTX capture range on
-  actor processes; clean and baseline runs never enter that branch. Full
+  actor processes. The profile launcher enables dynamic-message matching for
+  PyTorch's NVTX marker and writes reports directly into the run directory;
+  clean and baseline runs never enter that branch. Full
   debug rollout serialization is campaign-only and is disabled in smoke and
   timed performance runs.
 - **NeMo RL:** use `grpo_qwen2_5_7b_search_r1.yaml` with training shuffle
