@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+set -euo pipefail
+
+real_nsys_bin="${SEARCH_R1_REAL_NSYS_BIN:?SEARCH_R1_REAL_NSYS_BIN must point to the real nsys executable}"
+session_prefix="${SEARCH_R1_SLIME_NSYS_SESSION_PREFIX:-search_r1_slime}"
+
+if [[ ! -x "${real_nsys_bin}" ]]; then
+  echo "SEARCH_R1_REAL_NSYS_BIN is not executable: ${real_nsys_bin}" >&2
+  exit 1
+fi
+if [[ ! "${session_prefix}" =~ ^[[:alpha:]][[:alnum:]_]*$ ]]; then
+  echo "SEARCH_R1_SLIME_NSYS_SESSION_PREFIX must contain only letters, digits, and underscores and start with a letter." >&2
+  exit 1
+fi
+
+if [[ "${1:-}" == profile ]]; then
+  exec "${real_nsys_bin}" profile \
+    --session-new="${session_prefix}_${BASHPID}" \
+    "${@:2}"
+fi
+
+exec "${real_nsys_bin}" "$@"

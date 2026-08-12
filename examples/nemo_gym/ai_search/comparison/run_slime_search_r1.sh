@@ -196,6 +196,8 @@ unset SEARCH_R1_NSYS_PROFILE_ROLLOUT_ID
 nsys_executable=disabled
 nsys_version=disabled
 nsys_report_timeout_seconds=disabled
+nsys_session_prefix=disabled
+nsys_session_stop_timeout_seconds=disabled
 if [[ "${observability_mode}" != baseline ]]; then
   export AI_SEARCH_TRACE_PATH="${output_dir}/trajectory-spans.jsonl"
   export AI_SEARCH_TRACE_SAMPLE_RATE="${trace_sample_rate}"
@@ -215,6 +217,12 @@ if [[ "${observability_mode}" == profile ]]; then
     export PATH="$(dirname -- "${nsys_executable}"):${PATH}"
     nsys_version=$("${nsys_executable}" --version 2>&1 | tail -n 1)
   fi
+  nsys_wrapper_dir="${comparison_dir}/nsys_wrapper"
+  if [[ ! -x "${nsys_wrapper_dir}/nsys" ]]; then
+    echo "Profile mode requires the executable comparison nsys wrapper." >&2
+    exit 1
+  fi
+  nsys_session_prefix="search_r1_slime_${SLURM_JOB_ID:-manual}"
   export NSYS_TMPDIR="${SEARCH_R1_NSYS_TMPDIR:-${output_dir}/nsight-tmp}"
   if [[ "${NSYS_TMPDIR}" != /* ]]; then
     echo "SEARCH_R1_NSYS_TMPDIR must be an absolute path." >&2
@@ -222,6 +230,12 @@ if [[ "${observability_mode}" == profile ]]; then
   fi
   mkdir -p "${NSYS_TMPDIR}"
   export SEARCH_R1_NSYS_PROFILE_ROLLOUT_ID=1
+  nsys_session_stop_timeout_seconds="${SEARCH_R1_SLIME_NSYS_STOP_TIMEOUT_SECONDS:-60}"
+  if [[ "${nsys_session_stop_timeout_seconds}" == *[!0-9]* ]] \
+    || (( nsys_session_stop_timeout_seconds < 1 )); then
+    echo "SEARCH_R1_SLIME_NSYS_STOP_TIMEOUT_SECONDS must be a positive integer." >&2
+    exit 1
+  fi
   nsys_report_timeout_seconds="${SEARCH_R1_SLIME_NSYS_REPORT_TIMEOUT_SECONDS:-300}"
   if [[ "${nsys_report_timeout_seconds}" == *[!0-9]* ]] \
     || (( nsys_report_timeout_seconds < 1 )); then
@@ -270,12 +284,16 @@ export PYTHONUNBUFFERED=1
   printf 'tensorboard_dir=%s\n' "${TENSORBOARD_DIR:-disabled}"
   printf 'swanlab_source=%s\n' "$([[ "${enable_tensorboard}" == 1 ]] && echo post-run-tensorboard-conversion || echo disabled)"
   printf 'nsys_executable=%s\nnsys_version=%s\n' "${nsys_executable}" "${nsys_version}"
-  printf 'nsys_profile_rollout_id=%s\nnsys_scope=%s\n' "${SEARCH_R1_NSYS_PROFILE_ROLLOUT_ID:-disabled}" "$([[ "${observability_mode}" == profile ]] && echo actor-rank-0-target-step-through-process-exit || echo disabled)"
+  printf 'nsys_profile_rollout_id=%s\nnsys_scope=%s\n' "${SEARCH_R1_NSYS_PROFILE_ROLLOUT_ID:-disabled}" "$([[ "${observability_mode}" == profile ]] && echo actor-rank-0-target-step-through-ray-job-completion || echo disabled)"
   printf 'nsys_actor_rank_scope=%s\n' "$([[ "${observability_mode}" == profile ]] && echo rank-0-only || echo disabled)"
   printf 'nsys_target_nvtx_scope=%s\n' "$([[ "${observability_mode}" == profile ]] && echo actor-rank-0-full-outer-step || echo disabled)"
-  printf 'nsys_collection_end=%s\n' "$([[ "${observability_mode}" == profile ]] && echo actor-process-exit || echo disabled)"
+  printf 'nsys_collection_end=%s\n' "$([[ "${observability_mode}" == profile ]] && echo launcher-session-stop-after-ray-job || echo disabled)"
   printf 'nsys_post_range_activity=%s\n' "$([[ "${observability_mode}" == profile ]] && echo present || echo disabled)"
   printf 'nsys_process_wait=%s\n' "$([[ "${observability_mode}" == profile ]] && echo primary || echo disabled)"
+  printf 'nsys_session_naming=%s\n' "$([[ "${observability_mode}" == profile ]] && echo launcher-prefix-and-wrapper-pid || echo disabled)"
+  printf 'nsys_session_prefix=%s\n' "${nsys_session_prefix}"
+  printf 'nsys_session_selection=%s\n' "$([[ "${observability_mode}" == profile ]] && echo single-active-prefixed-session || echo disabled)"
+  printf 'nsys_session_stop_timeout_seconds=%s\n' "${nsys_session_stop_timeout_seconds}"
   printf 'nsys_report_ready_gate=%s\n' "$([[ "${observability_mode}" == profile ]] && echo before-ray-stop || echo disabled)"
   printf 'nsys_report_timeout_seconds=%s\n' "${nsys_report_timeout_seconds}"
   printf 'nsys_nvtx_string_match=%s\n' "$([[ "${observability_mode}" == profile ]] && echo dynamic-full || echo disabled)"
@@ -403,14 +421,19 @@ trap 'ray stop --force >/dev/null 2>&1 || true' EXIT INT TERM
 
 if [[ "${observability_mode}" == profile ]]; then
   # Actor rank zero brackets the target outer step with a named NVTX range.
-  # Keep collection active after the range closes and finalize when the actor
-  # exits: ending a full-step capture inside range_pop() can deadlock the Ray
-  # actor in Nsight/CUPTI. The report therefore also contains later rank-zero
-  # activity, while the named range preserves the exact target-step boundary.
+  # Keep collection active after the range closes, then stop the named Nsight
+  # session from this launcher after the Ray job succeeds. Ending a full-step
+  # capture inside range_pop() can deadlock the Ray actor in Nsight/CUPTI, and
+  # relying on Ray's reaped worker launcher can leave nsys waiting on a zombie.
+  # The report therefore also contains later rank-zero activity, while the
+  # named range preserves the exact target-step boundary.
   runtime_env_json=$(printf \
-    '{"env_vars":{"PYTHONPATH":"%s","PATH":"%s","NSYS_TMPDIR":"%s","CUDA_DEVICE_MAX_CONNECTIONS":"1","SEARCH_R1_RETRIEVER_URL":"%s","SEARCH_R1_EVAL_FILE":"%s","SEARCH_R1_COMMON_EVAL_DIR":"%s","TENSORBOARD_DIR":"%s","AI_SEARCH_TRACE_PATH":"%s","AI_SEARCH_TRACE_SAMPLE_RATE":"%s","SEARCH_R1_NSYS_PROFILE_ROLLOUT_ID":"1","NSYS_NVTX_PROFILER_REGISTER_ONLY":"0"},"nsight":{"trace":"cuda,nvtx,cublas,nccl,osrt","cuda-memory-usage":"true","sample":"none","cpuctxsw":"none","capture-range":"nvtx","nvtx-capture":"search_r1_outer_step","capture-range-end":"none","wait":"primary","kill":"none","o":"%s/slime_actor_%%p"}}' \
+    '{"env_vars":{"PYTHONPATH":"%s","PATH":"%s:%s","SEARCH_R1_REAL_NSYS_BIN":"%s","SEARCH_R1_SLIME_NSYS_SESSION_PREFIX":"%s","NSYS_TMPDIR":"%s","CUDA_DEVICE_MAX_CONNECTIONS":"1","SEARCH_R1_RETRIEVER_URL":"%s","SEARCH_R1_EVAL_FILE":"%s","SEARCH_R1_COMMON_EVAL_DIR":"%s","TENSORBOARD_DIR":"%s","AI_SEARCH_TRACE_PATH":"%s","AI_SEARCH_TRACE_SAMPLE_RATE":"%s","SEARCH_R1_NSYS_PROFILE_ROLLOUT_ID":"1","NSYS_NVTX_PROFILER_REGISTER_ONLY":"0"},"nsight":{"trace":"cuda,nvtx,cublas,nccl,osrt","cuda-memory-usage":"true","sample":"none","cpuctxsw":"none","capture-range":"nvtx","nvtx-capture":"search_r1_outer_step","capture-range-end":"none","wait":"primary","kill":"none","o":"%s/slime_actor_%%p"}}' \
     "${PYTHONPATH}" \
+    "${nsys_wrapper_dir}" \
     "${PATH}" \
+    "${nsys_executable}" \
+    "${nsys_session_prefix}" \
     "${NSYS_TMPDIR}" \
     "${retriever_url}" \
     "${eval_file}" \
@@ -437,6 +460,29 @@ ray job submit \
   -- "${command[@]}"
 
 if [[ "${observability_mode}" == profile ]]; then
+  report_count=$(find "${output_dir}" -maxdepth 1 -type f \
+    -name 'slime_actor_*.nsys-rep' -size +0c | wc -l)
+  if (( report_count == 0 )); then
+    sessions_output=$("${nsys_executable}" sessions list)
+    mapfile -t active_session_ids < <(
+      awk -v prefix="${nsys_session_prefix}_" \
+        'NR > 1 && $3 ~ /Collection$/ && index($5, prefix) == 1 {print $1}' \
+        <<< "${sessions_output}"
+    )
+    if (( ${#active_session_ids[@]} != 1 )); then
+      printf '%s\n' "${sessions_output}" >&2
+      echo "Expected exactly one active prefixed rank-zero Nsight session after the Ray job; found ${#active_session_ids[@]}." >&2
+      exit 1
+    fi
+    active_session_id="${active_session_ids[0]}"
+    if timeout --signal=INT --kill-after=5s \
+      "${nsys_session_stop_timeout_seconds}s" \
+      "${nsys_executable}" stop --session="${active_session_id}"; then
+      echo "SEARCH_R1_SLIME_NSYS_SESSION_STOPPED session_id=${active_session_id}"
+    else
+      echo "The active rank-zero Nsight session did not stop cleanly; waiting for its report gate." >&2
+    fi
+  fi
   report_deadline=$((SECONDS + nsys_report_timeout_seconds))
   while true; do
     report_count=$(find "${output_dir}" -maxdepth 1 -type f \

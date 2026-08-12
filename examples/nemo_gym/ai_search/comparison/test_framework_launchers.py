@@ -29,6 +29,7 @@ ORIGINAL_SEARCH_R1_RUNTIME_PREP = (
 CURRENT_VERL_LAUNCHER = COMPARISON_DIR / "run_current_verl_search_r1.sh"
 CURRENT_VERL_PATCH = COMPARISON_DIR / "adapters" / "current-verl-comparison.patch"
 SLIME_LAUNCHER = COMPARISON_DIR / "run_slime_search_r1.sh"
+SLIME_NSYS_WRAPPER = COMPARISON_DIR / "nsys_wrapper" / "nsys"
 SLIME_CHECKPOINT_PREP = COMPARISON_DIR / "prepare_slime_search_r1_checkpoint.sh"
 SLIME_SEARCH_R1_PATCH = COMPARISON_DIR / "adapters" / "slime-search-r1-comparison.patch"
 GRPO_SYNC = COMPARISON_DIR.parents[3] / "nemo_rl" / "algorithms" / "grpo_sync.py"
@@ -45,6 +46,7 @@ def test_framework_launchers_have_valid_bash_syntax() -> None:
         ORIGINAL_SEARCH_R1_RUNTIME_PREP,
         CURRENT_VERL_LAUNCHER,
         SLIME_LAUNCHER,
+        SLIME_NSYS_WRAPPER,
         SLIME_CHECKPOINT_PREP,
     ):
         subprocess.run(["bash", "-n", str(launcher)], check=True)
@@ -398,10 +400,18 @@ def test_slime_launcher_freezes_aligned_protocol() -> None:
         "nsys_collection_end=%s\\n",
         "nsys_post_range_activity=%s\\n",
         "nsys_process_wait=%s\\n",
+        "nsys_session_naming=%s\\n",
+        "launcher-prefix-and-wrapper-pid",
+        "nsys_session_prefix=%s\\n",
+        "nsys_session_selection=%s\\n",
+        "nsys_session_stop_timeout_seconds=%s\\n",
         "nsys_report_ready_gate=%s\\n",
         "nsys_report_timeout_seconds=%s\\n",
-        "actor-rank-0-target-step-through-process-exit",
-        "actor-process-exit",
+        "actor-rank-0-target-step-through-ray-job-completion",
+        "launcher-session-stop-after-ray-job",
+        '"${nsys_executable}" stop --session="${active_session_id}"',
+        "Expected exactly one active prefixed rank-zero Nsight session after the Ray job",
+        "SEARCH_R1_SLIME_NSYS_SESSION_STOPPED",
         "before-ray-stop",
         "SEARCH_R1_SLIME_NSYS_REPORT_READY",
         "Timed out waiting for the rank-zero Nsight report before Ray shutdown.",
@@ -416,6 +426,14 @@ def test_slime_launcher_freezes_aligned_protocol() -> None:
     assert 'if [[ "${num_gpus}" != "8" ]]' in source
     assert "physical_gpus=%s\\nactor_gpus=%s\\nrollout_gpus=%s" in source
     assert "pkill" not in source
+
+    wrapper = _read(SLIME_NSYS_WRAPPER)
+    for fragment in (
+        "SEARCH_R1_REAL_NSYS_BIN",
+        "SEARCH_R1_SLIME_NSYS_SESSION_PREFIX",
+        '--session-new="${session_prefix}_${BASHPID}"',
+    ):
+        assert fragment in wrapper
 
 
 def test_slime_profile_patch_is_frozen_and_measurement_only() -> None:

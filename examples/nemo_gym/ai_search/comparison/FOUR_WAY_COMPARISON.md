@@ -132,16 +132,19 @@ data order, or fixed step-500 headline result.
   measurement-only patch brackets one outer step on actor rank zero with an
   NVTX range. The profile launcher enables dynamic-message matching for
   PyTorch's NVTX marker and starts collection at that range. It ignores the
-  range end as a collection-stop trigger and finalizes at actor process exit,
-  because ending a full-step collection inside `range_pop()` can deadlock the
-  Ray actor in Nsight/CUPTI. The named range still identifies the exact target
-  step, but aggregate Nsight tables also contain later rank-zero activity and
-  are labeled accordingly. Nsight waits for the primary actor process rather
-  than its re-parented children, and the launcher keeps Ray alive until the
-  rank-zero report is ready. Other actor ranks and the separate SGLang rollout
-  engines are explicitly recorded as missing; clean and baseline runs never
-  enter that branch. Full debug rollout serialization is campaign-only and is
-  disabled in smoke and timed performance runs.
+  range end as a collection-stop trigger. After the Ray job succeeds, the
+  launcher-side wrapper gives each worker session a unique job/PID-derived
+  name; the outer launcher discovers and stops the sole active prefixed
+  session before shutting Ray down, because ending a full-step collection
+  inside `range_pop()` can deadlock the Ray actor in Nsight/CUPTI and waiting
+  on Ray's reaped worker launcher can leave Nsight attached to a zombie. The
+  named range still
+  identifies the exact target step, but aggregate Nsight tables also contain
+  later rank-zero activity and are labeled accordingly. The launcher keeps
+  Ray alive until the rank-zero report is ready. Other actor ranks and the
+  separate SGLang rollout engines are explicitly recorded as missing; clean
+  and baseline runs never enter that branch. Full debug rollout serialization
+  is campaign-only and is disabled in smoke and timed performance runs.
 - **NeMo RL:** use `grpo_qwen2_5_7b_search_r1.yaml` with training shuffle
   disabled for the four-way aligned campaign; the paper-reproduction recipe
   may retain its native shuffle setting. Any diagnostic micro-batch override
