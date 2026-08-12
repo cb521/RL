@@ -156,6 +156,7 @@ Merge the independent evidence after a run:
 ```bash
 uv run python examples/nemo_gym/ai_search/comparison/analyze_observability.py \
   --console /path/to/run/console.log \
+  --timestamped-console /path/to/run/console-timestamps.tsv \
   --trace /path/to/run/trajectory-spans.jsonl \
   --prometheus /path/to/run/prometheus.jsonl \
   --gpu-samples /path/to/run/gpu.csv \
@@ -170,7 +171,11 @@ Use `--framework original`, `current`, or `slime` for the other launchers. The
 analyzer maps their native end-to-end and stage timers into one schema while
 retaining the raw metrics and documenting inclusive timers that must not be
 added together. GPU energy is estimated only across contiguous one-second
-samples; collection gaps over five seconds remain explicitly uncovered.
+samples; collection gaps over five seconds remain explicitly uncovered. The
+benchmark runner timestamps every native console line in both the baseline and
+observed run. This lets the analyzer publish a second resource, Prometheus, and
+trajectory view restricted to steps 2-4, so model initialization and the
+warm-up step do not dilute steady-state utilization or energy measurements.
 
 Framework adapters export final evaluation predictions to a common JSONL
 schema with `example_id`, `data_source`, `golden_answers`, `response`, and

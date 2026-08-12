@@ -106,8 +106,25 @@ def _read_jsonl(paths: Iterable[Path]) -> Iterable[dict[str, Any]]:
                 yield value
 
 
-def analyze_traces(paths: list[Path]) -> dict[str, Any]:
-    events = [event for event in _read_jsonl(paths) if event.get("event") == "span"]
+def _inside_window(
+    timestamp_seconds: float,
+    window: tuple[float, float] | None,
+) -> bool:
+    return window is None or window[0] <= timestamp_seconds <= window[1]
+
+
+def analyze_traces(
+    paths: list[Path],
+    *,
+    window: tuple[float, float] | None = None,
+) -> dict[str, Any]:
+    events = [
+        event
+        for event in _read_jsonl(paths)
+        if event.get("event") == "span"
+        and _inside_window(int(event["start_unix_ns"]) / 1_000_000_000.0, window)
+        and _inside_window(int(event["end_unix_ns"]) / 1_000_000_000.0, window)
+    ]
     operation_durations: dict[str, list[float]] = defaultdict(list)
     attribute_values: dict[str, list[float]] = defaultdict(list)
     trace_bounds: dict[str, list[tuple[int, int]]] = defaultdict(list)
@@ -200,7 +217,11 @@ def _series_key(name: str, labels: dict[str, str]) -> str:
     return f"{name}{{{rendered}}}"
 
 
-def analyze_prometheus(paths: list[Path]) -> dict[str, Any]:
+def analyze_prometheus(
+    paths: list[Path],
+    *,
+    window: tuple[float, float] | None = None,
+) -> dict[str, Any]:
     series: dict[str, list[tuple[int, float]]] = defaultdict(list)
     endpoints: set[str] = set()
     endpoint_outcomes: dict[str, list[bool]] = defaultdict(list)
@@ -212,6 +233,9 @@ def analyze_prometheus(paths: list[Path]) -> dict[str, Any]:
     snapshot_count = 0
 
     for snapshot in _read_jsonl(paths):
+        timestamp = int(snapshot["scraped_unix_ns"])
+        if not _inside_window(timestamp / 1_000_000_000.0, window):
+            continue
         snapshot_count += 1
         endpoint = str(snapshot.get("endpoint", "unknown"))
         endpoints.add(endpoint)
@@ -223,7 +247,6 @@ def analyze_prometheus(paths: list[Path]) -> dict[str, Any]:
         endpoint_outcomes[endpoint].append(True)
         if "scrape_duration_ms" in snapshot:
             scrape_durations_ms[endpoint].append(float(snapshot["scrape_duration_ms"]))
-        timestamp = int(snapshot["scraped_unix_ns"])
         raw_samples = snapshot.get("samples", [])
         if not isinstance(raw_samples, list):
             continue
@@ -380,7 +403,11 @@ def _integrate_power(points: list[tuple[float, float]]) -> dict[str, float | int
     }
 
 
-def analyze_gpu_samples(paths: list[Path]) -> dict[str, Any]:
+def analyze_gpu_samples(
+    paths: list[Path],
+    *,
+    window: tuple[float, float] | None = None,
+) -> dict[str, Any]:
     """Summarize one-second nvidia-smi samples without hiding missing values."""
     metric_columns = (
         "memory_used_mib",
@@ -415,6 +442,8 @@ def analyze_gpu_samples(paths: list[Path]) -> dict[str, Any]:
                 missing_columns.add("uuid")
             for row in reader:
                 timestamp = _parse_timestamp(row["timestamp"])
+                if not _inside_window(timestamp, window):
+                    continue
                 uuid = (row.get("uuid") or "").strip()
                 gpu = uuid or (
                     f"index:{row['index'].strip()}:"
@@ -478,7 +507,11 @@ def analyze_gpu_samples(paths: list[Path]) -> dict[str, Any]:
     }
 
 
-def analyze_host_samples(paths: list[Path]) -> dict[str, Any]:
+def analyze_host_samples(
+    paths: list[Path],
+    *,
+    window: tuple[float, float] | None = None,
+) -> dict[str, Any]:
     """Summarize host memory, load, and monotonic network-counter deltas."""
     metric_columns = ("mem_total_kib", "mem_available_kib", "load_1m")
     values: dict[str, list[float]] = defaultdict(list)
@@ -498,6 +531,8 @@ def analyze_host_samples(paths: list[Path]) -> dict[str, Any]:
             network_columns_available &= has_network
             for row in reader:
                 timestamp = _parse_timestamp(row["timestamp"])
+                if not _inside_window(timestamp, window):
+                    continue
                 parsed = {
                     column: _parse_float(row.get(column)) for column in metric_columns
                 }
@@ -847,6 +882,111 @@ def parse_framework_training_console(
     raise ValueError(f"Unsupported framework: {framework}")
 
 
+def analyze_step_timestamps(
+    path: Path,
+    *,
+    framework: str,
+    warmup_steps: int,
+) -> dict[str, Any]:
+    """Find native step boundaries in a runner-produced timestamped console."""
+    step_starts: dict[int, float] = {}
+    step_completions: dict[int, float] = {}
+    current_nemo_step: int | None = None
+    with path.open(encoding="utf-8", errors="replace") as source:
+        for line_number, raw_line in enumerate(source, start=1):
+            raw_timestamp, separator, raw_message = raw_line.rstrip("\n").partition(
+                "\t"
+            )
+            if not separator:
+                raise ValueError(
+                    f"Timestamped console line {line_number} has no tab separator"
+                )
+            try:
+                timestamp = float(raw_timestamp)
+            except ValueError as error:
+                raise ValueError(
+                    f"Invalid console timestamp at {path}:{line_number}"
+                ) from error
+            if not math.isfinite(timestamp):
+                raise ValueError(
+                    f"Non-finite console timestamp at {path}:{line_number}"
+                )
+            message = _ANSI_PATTERN.sub("", raw_message)
+
+            if framework == "nemo":
+                match = _STEP_PATTERN.search(message)
+                if match is not None:
+                    current_nemo_step = int(match.group(1))
+                    step_starts.setdefault(current_nemo_step, timestamp)
+                    continue
+                if current_nemo_step is not None and "Training FLOPS:" in message:
+                    step_completions[current_nemo_step] = timestamp
+                continue
+
+            if framework in {"original", "current"}:
+                match = _VERL_STEP_PATTERN.search(message)
+                if match is not None and "timing_s/update_actor:" in message:
+                    step_completions[int(match.group(1))] = timestamp
+                continue
+
+            if framework == "slime":
+                match = _SLIME_PERF_PATTERN.search(message)
+                if match is not None and "perf/actor_train_time" in message:
+                    step_completions[int(match.group(1)) + 1] = timestamp
+                continue
+
+            raise ValueError(f"Unsupported framework: {framework}")
+
+    completion_steps = sorted(step_completions)
+    steady_steps = [step for step in completion_steps if step > warmup_steps]
+    report: dict[str, Any] = {
+        "timestamp_source": str(path),
+        "step_starts_unix_seconds": {
+            str(step): timestamp for step, timestamp in sorted(step_starts.items())
+        },
+        "step_completions_unix_seconds": {
+            str(step): timestamp
+            for step, timestamp in sorted(step_completions.items())
+        },
+        "steady_step_ids": steady_steps,
+        "available": False,
+        "start_unix_seconds": None,
+        "end_unix_seconds": None,
+    }
+    if not steady_steps:
+        report["unavailable_reason"] = "no completed post-warmup steps"
+        return report
+
+    first_steady = steady_steps[0]
+    if framework == "nemo":
+        start = step_starts.get(first_steady)
+        start_semantics = "first steady NeMo step header"
+    else:
+        start = step_completions.get(first_steady - 1)
+        start_semantics = "preceding native step-completion metric"
+    if start is None:
+        report["unavailable_reason"] = (
+            f"no start boundary for steady step {first_steady}"
+        )
+        return report
+
+    end = step_completions[steady_steps[-1]]
+    if end <= start:
+        report["unavailable_reason"] = "steady window is not positive"
+        return report
+
+    report |= {
+        "available": True,
+        "start_unix_seconds": start,
+        "end_unix_seconds": end,
+        "duration_seconds": end - start,
+        "start_semantics": start_semantics,
+        "end_semantics": "last steady native step-completion metric",
+        "sample_filter_semantics": "closed interval; spans must be fully contained",
+    }
+    return report
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--trace", type=Path, action="append", default=[])
@@ -854,6 +994,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--gpu-samples", type=Path, action="append", default=[])
     parser.add_argument("--host-samples", type=Path, action="append", default=[])
     parser.add_argument("--console", type=Path)
+    parser.add_argument("--timestamped-console", type=Path)
     parser.add_argument(
         "--framework",
         choices=("nemo", "original", "current", "slime"),
@@ -885,9 +1026,13 @@ def main() -> None:
         *args.gpu_samples,
         *args.host_samples,
         args.console,
+        args.timestamped_console,
     ]:
         if path is not None and not path.is_file():
             raise FileNotFoundError(path)
+
+    if args.timestamped_console is not None and args.console is None:
+        raise ValueError("--timestamped-console requires --console")
 
     report: dict[str, Any] = {"schema_version": 1}
     if args.trace:
@@ -906,6 +1051,36 @@ def main() -> None:
             warmup_steps=args.warmup_steps,
             trajectories_per_step=args.trajectories_per_step,
         )
+    if args.timestamped_console is not None:
+        measurement_window = analyze_step_timestamps(
+            args.timestamped_console,
+            framework=args.framework,
+            warmup_steps=args.warmup_steps,
+        )
+        report["measurement_window"] = measurement_window
+        if measurement_window["available"]:
+            window = (
+                float(measurement_window["start_unix_seconds"]),
+                float(measurement_window["end_unix_seconds"]),
+            )
+            steady_state: dict[str, Any] = {}
+            if args.trace:
+                steady_state["trajectory_trace"] = analyze_traces(
+                    args.trace, window=window
+                )
+            if args.prometheus:
+                steady_state["prometheus"] = analyze_prometheus(
+                    args.prometheus, window=window
+                )
+            if args.gpu_samples:
+                steady_state["gpu_resources"] = analyze_gpu_samples(
+                    args.gpu_samples, window=window
+                )
+            if args.host_samples:
+                steady_state["host_resources"] = analyze_host_samples(
+                    args.host_samples, window=window
+                )
+            report["steady_state_evidence"] = steady_state
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
     print(args.output)

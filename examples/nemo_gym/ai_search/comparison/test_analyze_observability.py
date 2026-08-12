@@ -11,6 +11,7 @@ from analyze_observability import (
     analyze_gpu_samples,
     analyze_host_samples,
     analyze_prometheus,
+    analyze_step_timestamps,
     analyze_traces,
     parse_framework_training_console,
     parse_training_console,
@@ -358,3 +359,107 @@ def test_analyze_host_samples_sums_only_monotonic_network_deltas(tmp_path) -> No
         "rx_bytes": 50.0,
         "tx_bytes": 60.0,
     }
+
+
+@pytest.mark.parametrize(
+    ("framework", "lines", "expected_start", "expected_end"),
+    (
+        (
+            "nemo",
+            (
+                "1.0\t===== Step 1/2 =====",
+                "2.0\t  • Training FLOPS: 10 TFLOPS",
+                "3.0\t===== Step 2/2 =====",
+                "8.0\t  • Training FLOPS: 11 TFLOPS",
+            ),
+            3.0,
+            8.0,
+        ),
+        (
+            "original",
+            (
+                "2.0\tstep:1 - timing_s/update_actor:1 - timing_s/step:2",
+                "8.0\tstep:2 - timing_s/update_actor:1 - timing_s/step:6",
+            ),
+            2.0,
+            8.0,
+        ),
+        (
+            "current",
+            (
+                "2.0\tstep:1 - timing_s/update_actor:1 - timing_s/step:2",
+                "8.0\tstep:2 - timing_s/update_actor:1 - timing_s/step:6",
+            ),
+            2.0,
+            8.0,
+        ),
+        (
+            "slime",
+            (
+                "2.0\tperf 0: {'perf/actor_train_time': 1}",
+                "8.0\tperf 1: {'perf/actor_train_time': 1}",
+            ),
+            2.0,
+            8.0,
+        ),
+    ),
+)
+def test_analyze_step_timestamps_finds_steady_window(
+    tmp_path,
+    framework,
+    lines,
+    expected_start,
+    expected_end,
+) -> None:
+    timestamped = tmp_path / "console.tsv"
+    timestamped.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    report = analyze_step_timestamps(
+        timestamped,
+        framework=framework,
+        warmup_steps=1,
+    )
+
+    assert report["available"] is True
+    assert report["steady_step_ids"] == [2]
+    assert report["start_unix_seconds"] == expected_start
+    assert report["end_unix_seconds"] == expected_end
+
+
+def test_resource_and_trace_analyzers_filter_to_measurement_window(tmp_path) -> None:
+    gpu = tmp_path / "gpu.csv"
+    gpu.write_text(
+        "timestamp,index,uuid,memory_used_mib,memory_total_mib,gpu_util_percent,"
+        "memory_util_percent,power_watts,temperature_c,sm_clock_mhz,"
+        "memory_clock_mhz,pstate\n"
+        "1970-01-01T00:00:01+00:00,0,GPU-a,10,100,10,10,10,10,10,10,P0\n"
+        "1970-01-01T00:00:02+00:00,0,GPU-a,20,100,20,20,20,20,20,20,P0\n"
+        "1970-01-01T00:00:03+00:00,0,GPU-a,30,100,30,30,30,30,30,30,P0\n",
+        encoding="utf-8",
+    )
+    trace = tmp_path / "trace.jsonl"
+    _write_jsonl(
+        trace,
+        [
+            {
+                "event": "span",
+                "trace_id": f"trace-{second}",
+                "component": "search_r1_agent",
+                "operation": "rollout",
+                "status": "ok",
+                "start_unix_ns": second * 1_000_000_000,
+                "end_unix_ns": second * 1_000_000_000 + 10,
+                "duration_ms": 0.00001,
+                "attributes": {},
+            }
+            for second in (1, 2, 3)
+        ],
+    )
+
+    gpu_report = analyze_gpu_samples([gpu], window=(1.5, 2.5))
+    trace_report = analyze_traces([trace], window=(1.5, 2.5))
+
+    assert gpu_report["row_count"] == 1
+    assert gpu_report["all_gpus"]["gpu_util_percent"]["mean"] == 20.0
+    assert trace_report["span_count"] == 1
+    assert trace_report["trajectory_count"] == 1
