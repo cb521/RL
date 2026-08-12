@@ -1,8 +1,8 @@
 diff --git a/slime/ray/actor_group.py b/slime/ray/actor_group.py
-index 7662a0de69859290d8cfffd00ac62e61649ebffd..6d5a6d612ac44c9fe58ef36e7f6f9f7a5c91da08 100644
+index 7662a0de69859290d8cfffd00ac62e61649ebffd..27dd649bc9f3d4277215034720bf14268a65a4ae 100644
 --- a/slime/ray/actor_group.py
 +++ b/slime/ray/actor_group.py
-@@ -210,6 +210,15 @@ class RayTrainGroup:
+@@ -210,6 +210,37 @@ class RayTrainGroup:
      def clear_memory(self):
          return ray.get([actor.clear_memory.remote() for actor in self._actor_handlers])
  
@@ -14,6 +14,28 @@ index 7662a0de69859290d8cfffd00ac62e61649ebffd..6d5a6d612ac44c9fe58ef36e7f6f9f7a
 +        # GPU actor at once can deadlock the process-local agents on one node,
 +        # so close and materialize the reports one actor at a time.
 +        return [ray.get(actor.stop_nsys_profile.remote()) for actor in self._actor_handlers]
++
++    def finalize_nsys_profile(self):
++        """Gracefully exit profiled rank zero, then release the idle peers."""
++        actors, self._actor_handlers = self._actor_handlers, []
++        if not actors:
++            return
++
++        termination_ref = actors[0].__ray_terminate__.remote()
++        ready, unready = ray.wait([termination_ref], num_returns=1, timeout=60)
++        if unready or not ready:
++            raise TimeoutError("Rank-zero graceful profile finalization timed out")
++        try:
++            ray.get(termination_ref)
++        except ray.exceptions.RayActorError:
++            # Ray reports the intentional exit requested by __ray_terminate__
++            # as actor death; other task exceptions must still propagate.
++            pass
++
++        for actor in actors[1:]:
++            ray.kill(actor, no_restart=True)
++        if len(actors) > 1:
++            time.sleep(5)
 +
      def set_rollout_manager(self, rollout_manager):
          self._rollout_manager = rollout_manager
@@ -44,7 +66,7 @@ index a8ba6ddc645646fdfe7444b2dc2dc7c1d7ca8be9..8b3ae7d3f0387d8fbeef81a5f82ad037
      def sleep(self, tags):
          raise NotImplementedError
 diff --git a/train.py b/train.py
-index 9cb296886619536b65fb8637b16901aa74f1c76f..1e1b54781b513d392e59c2a7d1aa569ad3556fbf 100644
+index 9cb296886619536b65fb8637b16901aa74f1c76f..8da08b8ca7985ba3efab3f5dfb280cd811a7aa9c 100644
 --- a/train.py
 +++ b/train.py
 @@ -1,3 +1,5 @@
@@ -99,7 +121,7 @@ index 9cb296886619536b65fb8637b16901aa74f1c76f..1e1b54781b513d392e59c2a7d1aa569a
 +        # capture-range-end=none keeps range_pop() out of Nsight's synchronous
 +        # stop path. All actor work is complete here, so release the actor
 +        # group and let primary-process exit finalize the rank-zero report.
-+        actor_model.release()
++        actor_model.finalize_nsys_profile()
  
  
  if __name__ == "__main__":

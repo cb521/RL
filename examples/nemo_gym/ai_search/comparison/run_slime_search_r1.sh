@@ -22,8 +22,8 @@ num_gpus="${SEARCH_R1_NUM_GPUS:-8}"
 allow_nonformal_preflight="${SEARCH_R1_ALLOW_NONFORMAL_PREFLIGHT:-0}"
 
 expected_slime_base=a74ae3a0ad16bd8b769d5386738e8ae3d1269d7e
-expected_slime_patched_head=bdd22cb1f672c416112fe5439745d64a9ec57caf
-expected_slime_patch_sha256=b6ed24e28d770c34c6a736eac80108ed7e982d14077eeed1efbc14876c7dae5f
+expected_slime_patched_head=b4de90946ad5bbf137c6b542d8275b5c9feb902d
+expected_slime_patch_sha256=ec1849f5087befa622bc6fb27d8003dbc72595f7cce809f4896678714f4c40ff
 expected_model_revision=d149729398750b98c0af14eb82c78cfe92750796
 expected_train_sha256=64325c44a1ac79c53fc70ad36551e34b4d2ac0fa79cf0d3cca1c4d244bdeaa39
 expected_eval_sha256=7c7d10d003dce8b0c6c2c0c4177974d0767cd2a380123faf6ee51473bc8e2461
@@ -277,12 +277,12 @@ export PYTHONUNBUFFERED=1
   printf 'tensorboard_dir=%s\n' "${TENSORBOARD_DIR:-disabled}"
   printf 'swanlab_source=%s\n' "$([[ "${enable_tensorboard}" == 1 ]] && echo post-run-tensorboard-conversion || echo disabled)"
   printf 'nsys_executable=%s\nnsys_version=%s\n' "${nsys_executable}" "${nsys_version}"
-  printf 'nsys_profile_rollout_id=%s\nnsys_scope=%s\n' "${SEARCH_R1_NSYS_PROFILE_ROLLOUT_ID:-disabled}" "$([[ "${observability_mode}" == profile ]] && echo actor-rank-0-target-step-through-final-actor-release || echo disabled)"
+  printf 'nsys_profile_rollout_id=%s\nnsys_scope=%s\n' "${SEARCH_R1_NSYS_PROFILE_ROLLOUT_ID:-disabled}" "$([[ "${observability_mode}" == profile ]] && echo actor-rank-0-target-step-through-graceful-rank-zero-exit || echo disabled)"
   printf 'nsys_actor_rank_scope=%s\n' "$([[ "${observability_mode}" == profile ]] && echo rank-0-only || echo disabled)"
   printf 'nsys_target_nvtx_scope=%s\n' "$([[ "${observability_mode}" == profile ]] && echo actor-rank-0-full-outer-step || echo disabled)"
-  printf 'nsys_collection_end=%s\n' "$([[ "${observability_mode}" == profile ]] && echo profile-only-final-actor-release || echo disabled)"
+  printf 'nsys_collection_end=%s\n' "$([[ "${observability_mode}" == profile ]] && echo profile-only-graceful-rank-zero-exit || echo disabled)"
   printf 'nsys_post_range_activity=%s\n' "$([[ "${observability_mode}" == profile ]] && echo present || echo disabled)"
-  printf 'nsys_actor_finalization=%s\n' "$([[ "${observability_mode}" == profile ]] && echo ray-kill-after-all-rollouts || echo disabled)"
+  printf 'nsys_actor_finalization=%s\n' "$([[ "${observability_mode}" == profile ]] && echo ray-graceful-rank-zero-then-release-peers || echo disabled)"
   printf 'nsys_process_wait=%s\n' "$([[ "${observability_mode}" == profile ]] && echo primary || echo disabled)"
   printf 'nsys_session_naming=%s\n' "$([[ "${observability_mode}" == profile ]] && echo launcher-prefix-and-wrapper-pid || echo disabled)"
   printf 'nsys_session_prefix=%s\n' "${nsys_session_prefix}"
@@ -415,8 +415,10 @@ if [[ "${observability_mode}" == profile ]]; then
   # Actor rank zero brackets the target outer step with a named NVTX range.
   # Ignore the range end as a collection-stop trigger so range_pop() cannot
   # enter Nsight's synchronous stop path. After all rollouts, the frozen
-  # measurement-only patch releases the actor group; rank-zero process exit
-  # finalizes the report while the named range preserves the target boundary.
+  # measurement-only patch gracefully terminates rank zero, waits for Ray's
+  # intentional actor-exit result, then releases the idle peers. Rank-zero
+  # process exit finalizes the report while the named range preserves the
+  # target boundary.
   runtime_env_json=$(printf \
     '{"env_vars":{"PYTHONPATH":"%s","PATH":"%s:%s","SEARCH_R1_REAL_NSYS_BIN":"%s","SEARCH_R1_SLIME_NSYS_SESSION_PREFIX":"%s","NSYS_TMPDIR":"%s","CUDA_DEVICE_MAX_CONNECTIONS":"1","SEARCH_R1_RETRIEVER_URL":"%s","SEARCH_R1_EVAL_FILE":"%s","SEARCH_R1_COMMON_EVAL_DIR":"%s","TENSORBOARD_DIR":"%s","AI_SEARCH_TRACE_PATH":"%s","AI_SEARCH_TRACE_SAMPLE_RATE":"%s","SEARCH_R1_NSYS_PROFILE_ROLLOUT_ID":"1","NSYS_NVTX_PROFILER_REGISTER_ONLY":"0"},"nsight":{"trace":"cuda,nvtx,cublas,nccl,osrt","cuda-memory-usage":"true","sample":"none","cpuctxsw":"none","capture-range":"nvtx","nvtx-capture":"search_r1_outer_step","capture-range-end":"none","wait":"primary","kill":"none","o":"%s/slime_actor_%%p"}}' \
     "${PYTHONPATH}" \
