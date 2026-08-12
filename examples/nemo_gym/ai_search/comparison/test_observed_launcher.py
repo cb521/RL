@@ -43,3 +43,10 @@ def test_observed_modes_enable_native_vllm_metrics() -> None:
     assert "vllm-http-servers" in launcher
     assert '@app.get("/metrics", include_in_schema=False)' in worker
     assert "content=generate_latest()" in worker
+
+
+def test_profile_mode_disables_unavailable_cpu_sampling() -> None:
+    launcher = (Path(__file__).parents[1] / "run_ai_search_observed.sh").read_text()
+
+    assert '\\"sample\\":\\"none\\"' in launcher
+    assert '\\"cpuctxsw\\":\\"none\\"' in launcher

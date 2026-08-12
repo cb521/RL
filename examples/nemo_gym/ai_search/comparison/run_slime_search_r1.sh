@@ -382,7 +382,7 @@ trap 'ray stop --force >/dev/null 2>&1 || true' EXIT INT TERM
 
 if [[ "${observability_mode}" == profile ]]; then
   runtime_env_json=$(printf \
-    '{"env_vars":{"PYTHONPATH":"%s","PATH":"%s","NSYS_TMPDIR":"%s","CUDA_DEVICE_MAX_CONNECTIONS":"1","SEARCH_R1_RETRIEVER_URL":"%s","SEARCH_R1_EVAL_FILE":"%s","SEARCH_R1_COMMON_EVAL_DIR":"%s","TENSORBOARD_DIR":"%s","AI_SEARCH_TRACE_PATH":"%s","AI_SEARCH_TRACE_SAMPLE_RATE":"%s","SEARCH_R1_NSYS_PROFILE_ROLLOUT_ID":"1"},"nsight":{"trace":"cuda,nvtx,cublas,nccl,osrt","cuda-memory-usage":"true","cpuctxsw":"none","capture-range":"cudaProfilerApi","capture-range-end":"stop","kill":"none","o":"slime_actor_%%p"}}' \
+    '{"env_vars":{"PYTHONPATH":"%s","PATH":"%s","NSYS_TMPDIR":"%s","CUDA_DEVICE_MAX_CONNECTIONS":"1","SEARCH_R1_RETRIEVER_URL":"%s","SEARCH_R1_EVAL_FILE":"%s","SEARCH_R1_COMMON_EVAL_DIR":"%s","TENSORBOARD_DIR":"%s","AI_SEARCH_TRACE_PATH":"%s","AI_SEARCH_TRACE_SAMPLE_RATE":"%s","SEARCH_R1_NSYS_PROFILE_ROLLOUT_ID":"1"},"nsight":{"trace":"cuda,nvtx,cublas,nccl,osrt","cuda-memory-usage":"true","sample":"none","cpuctxsw":"none","capture-range":"cudaProfilerApi","capture-range-end":"stop","kill":"none","o":"slime_actor_%%p"}}' \
     "${PYTHONPATH}" \
     "${PATH}" \
     "${NSYS_TMPDIR}" \
