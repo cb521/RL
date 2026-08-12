@@ -37,6 +37,7 @@ from prometheus_client import (
 from pydantic import BaseModel, Field
 
 from resources_servers.ai_search.observability import trace_span
+from retrieval_serialization import SerializedRequestGate
 
 
 _GPU_RESOURCES: list[object] = []
@@ -114,7 +115,7 @@ class E5PrometheusMetrics:
         )
         for outcome in ("success", "error"):
             self.requests.labels(outcome=outcome)
-        for stage in ("encode", "index", "fetch", "request_total"):
+        for stage in ("queue", "encode", "index", "fetch", "request_total"):
             self.stage_seconds.labels(stage=stage)
 
 
@@ -267,6 +268,7 @@ def _create_app(
     *, retriever: Any, upstream: ModuleType, metrics: E5PrometheusMetrics
 ) -> FastAPI:
     app = FastAPI(title="Observed official Search-R1 E5 retriever")
+    request_gate = SerializedRequestGate()
 
     @app.get("/healthz")
     def healthz() -> dict[str, Any]:
@@ -274,6 +276,7 @@ def _create_app(
             "status": "ready",
             "vectors": int(retriever.index.ntotal),
             "dimension": int(retriever.index.d),
+            "max_concurrent_requests": 1,
         }
 
     @app.get("/metrics")
@@ -300,13 +303,17 @@ def _create_app(
             },
         ) as span:
             try:
-                results, scores, stage_totals = _timed_batch_search(
-                    retriever=retriever,
-                    upstream=upstream,
-                    queries=body.queries,
-                    top_k=top_k,
-                    metrics=metrics,
-                )
+                with request_gate.enter() as queue_seconds:
+                    metrics.stage_seconds.labels(stage="queue").observe(
+                        queue_seconds
+                    )
+                    results, scores, stage_totals = _timed_batch_search(
+                        retriever=retriever,
+                        upstream=upstream,
+                        queries=body.queries,
+                        top_k=top_k,
+                        metrics=metrics,
+                    )
                 response_rows: list[list[Any]] = []
                 for result_row, score_row in zip(results, scores):
                     if body.return_scores:
@@ -327,6 +334,7 @@ def _create_app(
                 span.set_attributes(
                     outcome="success",
                     request_ms=request_seconds * 1000.0,
+                    queue_ms=queue_seconds * 1000.0,
                     encode_ms=stage_totals["encode"] * 1000.0,
                     index_ms=stage_totals["index"] * 1000.0,
                     fetch_ms=stage_totals["fetch"] * 1000.0,
