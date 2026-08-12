@@ -91,7 +91,7 @@ aligned scoreboard.
 | Optimizer | AdamW, learning rate 1e-6, weight decay 0.01, betas (0.9, 0.999), epsilon 1e-8; 142 outer-step scheduler advances of linear warm-up, followed by a constant learning rate |
 | Outer step | 512 questions x five trajectories |
 | Optimizer mini-batch | 256 trajectories, ten updates per outer step |
-| Campaign | 500 completed outer steps; validate every 50; save every 100 |
+| Campaign | 500 completed outer steps; validate every 50; save at steps 250 and 500 |
 
 The retrieval service is shared when network topology permits. If a framework
 needs a separate service process, a pre-run query suite must prove identical
@@ -99,6 +99,11 @@ document IDs and ordering. Any failed search, silently skipped trajectory,
 changed prompt, different model revision, or incomplete optimizer update makes
 that run ineligible until it is rerun or explicitly reported outside the
 aligned scoreboard.
+
+The public recipe saves every 100 steps. This comparison instead keeps only
+the midpoint and final checkpoints for every framework. Checkpoint cadence is
+outside the timed systems window and does not change the optimizer, scheduler,
+data order, or fixed step-500 headline result.
 
 ### Required adapter disclosures
 

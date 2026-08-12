@@ -73,7 +73,7 @@ def test_nemo_search_r1_launcher_freezes_aligned_protocol() -> None:
         "policy.generation.val_top_p=1.0",
         "grpo.val_num_generations_per_prompt=1",
         '"checkpointing.enabled=${checkpoint_enabled}"',
-        "checkpointing.save_period=100",
+        "checkpointing.save_period=250",
         'export AI_SEARCH_OBSERVABILITY_MODE="${observability_mode}"',
         'trace_sample_rate="${SEARCH_R1_TRACE_SAMPLE_RATE:-1.0}"',
         "engine_prometheus_scope",
@@ -92,6 +92,13 @@ def test_nemo_search_r1_launcher_freezes_aligned_protocol() -> None:
         "val_temperature": 0.0,
         "val_top_p": 1.0,
     }
+
+
+def test_campaign_launchers_save_only_midpoint_and_final_checkpoints() -> None:
+    assert "checkpointing.save_period=250" in _read(NEMO_SEARCH_R1_LAUNCHER)
+    assert "save_freq=250" in _read(ORIGINAL_SEARCH_R1_LAUNCHER)
+    assert "save_freq=250" in _read(CURRENT_VERL_LAUNCHER)
+    assert "save_interval=250" in _read(SLIME_LAUNCHER)
 
 
 def test_nemo_sync_trainer_prints_classified_response_work() -> None:

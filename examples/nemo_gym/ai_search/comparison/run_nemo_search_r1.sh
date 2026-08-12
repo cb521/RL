@@ -200,7 +200,7 @@ command=(
   "grpo.val_at_end=${val_at_end}"
   grpo.val_num_generations_per_prompt=1
   "checkpointing.enabled=${checkpoint_enabled}"
-  checkpointing.save_period=100
+  checkpointing.save_period=250
   "cluster.gpus_per_node=${num_gpus}"
   "logger.swanlab.name=nemo-${run_mode}-seed-${seed}"
 )

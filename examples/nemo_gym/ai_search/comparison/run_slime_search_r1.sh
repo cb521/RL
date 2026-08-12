@@ -54,7 +54,7 @@ case "${run_mode}" in
     num_rollout=500
     global_batch_size=256
     eval_interval=50
-    save_interval=100
+    save_interval=250
     # Ten optimizer mini-batches are consumed by every 2,560-trajectory outer step.
     lr_schedule_horizon_optimizer_updates=5000
     lr_warmup_optimizer_updates=1420

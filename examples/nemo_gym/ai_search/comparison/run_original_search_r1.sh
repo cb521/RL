@@ -61,7 +61,7 @@ case "${run_mode}" in
     ppo_micro_batch_size=64
     log_prob_micro_batch_size=128
     val_batch_size=256
-    save_freq=100
+    save_freq=250
     test_freq=50
     val_before_train=true
     val_at_end=true

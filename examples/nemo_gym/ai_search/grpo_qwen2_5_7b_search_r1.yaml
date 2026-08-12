@@ -114,8 +114,8 @@ env:
 checkpointing:
   enabled: true
   checkpoint_dir: results/grpo-ai-search-qwen2.5-7b-search-r1
-  keep_top_k: 5
-  save_period: 100
+  keep_top_k: 2
+  save_period: 250
   save_optimizer: true
 
 logger:

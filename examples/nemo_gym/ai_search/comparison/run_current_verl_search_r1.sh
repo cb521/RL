@@ -58,7 +58,7 @@ case "${run_mode}" in
     ppo_micro_batch_size_per_gpu=8
     log_prob_micro_batch_size_per_gpu=16
     agent_workers=256
-    save_freq=100
+    save_freq=250
     test_freq=50
     val_before_train=true
     default_trace_sample_rate=0.01
