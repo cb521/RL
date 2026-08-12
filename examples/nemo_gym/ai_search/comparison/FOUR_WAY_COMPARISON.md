@@ -130,12 +130,16 @@ data order, or fixed step-500 headline result.
   mini-batches in one outer step, matching the other three schedulers; the hook
   does not change gradients or optimizer work. A separate, frozen
   measurement-only patch brackets one outer step on actor rank zero with an
-  NVTX capture range. The profile launcher enables dynamic-message matching for
-  PyTorch's NVTX marker and writes the report directly into the run directory.
-  Other actor ranks and the separate SGLang rollout engines are explicitly
-  recorded as missing; clean and baseline runs never enter that branch. Full
-  debug rollout serialization is campaign-only and is disabled in smoke and
-  timed performance runs.
+  NVTX range. The profile launcher enables dynamic-message matching for
+  PyTorch's NVTX marker and starts collection at that range. It ignores the
+  range end as a collection-stop trigger and finalizes at actor process exit,
+  because ending a full-step collection inside `range_pop()` can deadlock the
+  Ray actor in Nsight/CUPTI. The named range still identifies the exact target
+  step, but aggregate Nsight tables also contain later rank-zero activity and
+  are labeled accordingly. Other actor ranks and the separate SGLang rollout
+  engines are explicitly recorded as missing; clean and baseline runs never
+  enter that branch. Full debug rollout serialization is campaign-only and is
+  disabled in smoke and timed performance runs.
 - **NeMo RL:** use `grpo_qwen2_5_7b_search_r1.yaml` with training shuffle
   disabled for the four-way aligned campaign; the paper-reproduction recipe
   may retain its native shuffle setting. Any diagnostic micro-batch override
