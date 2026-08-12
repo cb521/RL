@@ -390,7 +390,7 @@ def test_slime_launcher_freezes_aligned_protocol() -> None:
         '"NSYS_NVTX_PROFILER_REGISTER_ONLY":"0"',
         '"capture-range":"nvtx"',
         '"nvtx-capture":"search_r1_outer_step"',
-        '"capture-range-end":"none"',
+        '"capture-range-end":"stop"',
         '"wait":"primary"',
         '"o":"%s/slime_actor_%%p"',
         '"sample":"none"',
@@ -403,15 +403,10 @@ def test_slime_launcher_freezes_aligned_protocol() -> None:
         "nsys_session_naming=%s\\n",
         "launcher-prefix-and-wrapper-pid",
         "nsys_session_prefix=%s\\n",
-        "nsys_session_selection=%s\\n",
-        "nsys_session_stop_timeout_seconds=%s\\n",
         "nsys_report_ready_gate=%s\\n",
         "nsys_report_timeout_seconds=%s\\n",
-        "actor-rank-0-target-step-through-ray-job-completion",
-        "launcher-session-stop-after-ray-job",
-        '"${nsys_executable}" stop --session="${active_session_id}"',
-        "Expected exactly one active prefixed rank-zero Nsight session after the Ray job",
-        "SEARCH_R1_SLIME_NSYS_SESSION_STOPPED",
+        "actor-rank-0-target-step",
+        "target-nvtx-range-end",
         "before-ray-stop",
         "SEARCH_R1_SLIME_NSYS_REPORT_READY",
         "Timed out waiting for the rank-zero Nsight report before Ray shutdown.",
@@ -426,6 +421,8 @@ def test_slime_launcher_freezes_aligned_protocol() -> None:
     assert 'if [[ "${num_gpus}" != "8" ]]' in source
     assert "physical_gpus=%s\\nactor_gpus=%s\\nrollout_gpus=%s" in source
     assert "pkill" not in source
+    assert '"capture-range-end":"none"' not in source
+    assert '"capture-range-end":"repeat' not in source
 
     wrapper = _read(SLIME_NSYS_WRAPPER)
     for fragment in (
