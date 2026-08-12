@@ -19,7 +19,7 @@ index 7662a0de69859290d8cfffd00ac62e61649ebffd..6d5a6d612ac44c9fe58ef36e7f6f9f7a
          self._rollout_manager = rollout_manager
          return ray.get([actor.set_rollout_manager.remote(rollout_manager) for actor in self._actor_handlers])
 diff --git a/slime/ray/train_actor.py b/slime/ray/train_actor.py
-index a8ba6ddc645646fdfe7444b2dc2dc7c1d7ca8be9..cd5945db8c63ab6d7e7b154ac9d23c79cd33434a 100644
+index a8ba6ddc645646fdfe7444b2dc2dc7c1d7ca8be9..8b3ae7d3f0387d8fbeef81a5f82ad037063176d8 100644
 --- a/slime/ray/train_actor.py
 +++ b/slime/ray/train_actor.py
 @@ -98,6 +98,20 @@ class TrainRayActor(RayActor):
@@ -27,15 +27,15 @@ index a8ba6ddc645646fdfe7444b2dc2dc7c1d7ca8be9..cd5945db8c63ab6d7e7b154ac9d23c79
          print_memory("after TrainRayActor.clear_memory")
  
 +    def start_nsys_profile(self):
-+        """Open the NVTX range used for one process-local Nsight capture."""
-+        if self.args.debug_rollout_only:
++        """Open the rank-zero NVTX range used for the Nsight capture."""
++        if self.args.debug_rollout_only or self.args.rank != 0:
 +            return
 +        torch.cuda.synchronize()
 +        torch.cuda.nvtx.range_push("search_r1_outer_step")
 +
 +    def stop_nsys_profile(self):
-+        """Synchronize the profiled work and close its NVTX capture range."""
-+        if self.args.debug_rollout_only:
++        """Synchronize rank-zero work and close its NVTX capture range."""
++        if self.args.debug_rollout_only or self.args.rank != 0:
 +            return
 +        torch.cuda.synchronize()
 +        torch.cuda.nvtx.range_pop()

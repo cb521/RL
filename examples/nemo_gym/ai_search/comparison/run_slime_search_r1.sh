@@ -22,8 +22,8 @@ num_gpus="${SEARCH_R1_NUM_GPUS:-8}"
 allow_nonformal_preflight="${SEARCH_R1_ALLOW_NONFORMAL_PREFLIGHT:-0}"
 
 expected_slime_base=a74ae3a0ad16bd8b769d5386738e8ae3d1269d7e
-expected_slime_patched_head=109fa32ce04f76544d950aa366bd3eeda7f64570
-expected_slime_patch_sha256=01a863b88e1dc875264476fb719a4d43aafbf231a493ba6f183bb5b29ffe6567
+expected_slime_patched_head=510ed5bdd9942bfb71c2b74d1928f6cefde646df
+expected_slime_patch_sha256=cedb27184a058ecca01304b2631856706e1654b396d5133f353b31d32ae5aafb
 expected_model_revision=d149729398750b98c0af14eb82c78cfe92750796
 expected_train_sha256=64325c44a1ac79c53fc70ad36551e34b4d2ac0fa79cf0d3cca1c4d244bdeaa39
 expected_eval_sha256=7c7d10d003dce8b0c6c2c0c4177974d0767cd2a380123faf6ee51473bc8e2461
@@ -263,7 +263,8 @@ export PYTHONUNBUFFERED=1
   printf 'tensorboard_dir=%s\n' "${TENSORBOARD_DIR:-disabled}"
   printf 'swanlab_source=%s\n' "$([[ "${enable_tensorboard}" == 1 ]] && echo post-run-tensorboard-conversion || echo disabled)"
   printf 'nsys_executable=%s\nnsys_version=%s\n' "${nsys_executable}" "${nsys_version}"
-  printf 'nsys_profile_rollout_id=%s\nnsys_scope=%s\n' "${SEARCH_R1_NSYS_PROFILE_ROLLOUT_ID:-disabled}" "$([[ "${observability_mode}" == profile ]] && echo actor-processes-full-outer-step || echo disabled)"
+  printf 'nsys_profile_rollout_id=%s\nnsys_scope=%s\n' "${SEARCH_R1_NSYS_PROFILE_ROLLOUT_ID:-disabled}" "$([[ "${observability_mode}" == profile ]] && echo actor-rank-0-full-outer-step || echo disabled)"
+  printf 'nsys_actor_rank_scope=%s\n' "$([[ "${observability_mode}" == profile ]] && echo rank-0-only || echo disabled)"
   printf 'nsys_nvtx_string_match=%s\n' "$([[ "${observability_mode}" == profile ]] && echo dynamic-full || echo disabled)"
   printf 'nsys_rollout_engine_scope=%s\n' "$([[ "${observability_mode}" == profile ]] && echo missing || echo disabled)"
   printf 'formal_parity_result=%s\n' "$([[ "${run_mode}" == campaign && "${observability_mode}" == clean ]] && echo candidate || echo false)"

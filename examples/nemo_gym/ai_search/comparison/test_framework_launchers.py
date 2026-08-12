@@ -343,8 +343,8 @@ def test_slime_launcher_freezes_aligned_protocol() -> None:
 
     required_fragments = (
         "expected_slime_base=a74ae3a0ad16bd8b769d5386738e8ae3d1269d7e",
-        "expected_slime_patched_head=109fa32ce04f76544d950aa366bd3eeda7f64570",
-        "expected_slime_patch_sha256=01a863b88e1dc875264476fb719a4d43aafbf231a493ba6f183bb5b29ffe6567",
+        "expected_slime_patched_head=510ed5bdd9942bfb71c2b74d1928f6cefde646df",
+        "expected_slime_patch_sha256=cedb27184a058ecca01304b2631856706e1654b396d5133f353b31d32ae5aafb",
         "expected_model_revision=d149729398750b98c0af14eb82c78cfe92750796",
         "expected_train_sha256=64325c44a1ac79c53fc70ad36551e34b4d2ac0fa79cf0d3cca1c4d244bdeaa39",
         "expected_eval_sha256=7c7d10d003dce8b0c6c2c0c4177974d0767cd2a380123faf6ee51473bc8e2461",
@@ -392,6 +392,7 @@ def test_slime_launcher_freezes_aligned_protocol() -> None:
         '"o":"%s/slime_actor_%%p"',
         '"sample":"none"',
         "nsys_nvtx_string_match=%s\\n",
+        "nsys_actor_rank_scope=%s\\n",
         "engine_prometheus_scope=not-collected-native-always-on",
         "engine_prometheus_scope=sglang-router-and-engine-http-servers",
         'ray_tmpdir="${SEARCH_R1_RAY_TMPDIR:-${output_dir}/ray}"',
@@ -408,7 +409,7 @@ def test_slime_launcher_freezes_aligned_protocol() -> None:
 def test_slime_profile_patch_is_frozen_and_measurement_only() -> None:
     patch = SLIME_SEARCH_R1_PATCH.read_bytes()
     assert hashlib.sha256(patch).hexdigest() == (
-        "01a863b88e1dc875264476fb719a4d43aafbf231a493ba6f183bb5b29ffe6567"
+        "cedb27184a058ecca01304b2631856706e1654b396d5133f353b31d32ae5aafb"
     )
     source = patch.decode()
     for fragment in (
@@ -418,6 +419,7 @@ def test_slime_profile_patch_is_frozen_and_measurement_only() -> None:
         "search_r1_outer_step",
         "torch.cuda.nvtx.range_push",
         "torch.cuda.nvtx.range_pop",
+        "self.args.rank != 0",
         "one actor at a time",
     ):
         assert fragment in source
@@ -427,7 +429,7 @@ def test_slime_profile_patch_is_frozen_and_measurement_only() -> None:
 def test_slime_checkpoint_conversion_requires_exact_roundtrip() -> None:
     source = _read(SLIME_CHECKPOINT_PREP)
     for fragment in (
-        "expected_slime_patched_head=109fa32ce04f76544d950aa366bd3eeda7f64570",
+        "expected_slime_patched_head=510ed5bdd9942bfb71c2b74d1928f6cefde646df",
         "slimerl/slime@sha256:f7f8ee9acde9645a6e88f0c703597e69a58d2892abff56071630c88f23d5068f",
         "--ckpt-format torch_dist",
         "convert_torch_dist_to_hf.py",
