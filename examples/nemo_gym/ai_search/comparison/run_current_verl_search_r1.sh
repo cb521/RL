@@ -21,7 +21,7 @@ lr_warmup_outer_steps=142
 
 expected_verl_upstream_base=5cfb74fa04c7f6e5d98260b8f05157c6a9402695
 expected_verl_patched_head=fb72e8b195095ac3334e870176eb6eaa80184001
-expected_verl_patch_sha256=b09e26165aa0003dbb9ce284a806ca3a094f1ada0be4d4cb462edc3c1f802220
+expected_verl_patch_sha256=3a11219896823a85e7f2527351b9071b118e87564b3a359f2b4c26f1257980c4
 expected_model_revision=d149729398750b98c0af14eb82c78cfe92750796
 expected_train_sha256=64325c44a1ac79c53fc70ad36551e34b4d2ac0fa79cf0d3cca1c4d244bdeaa39
 expected_eval_sha256=7c7d10d003dce8b0c6c2c0c4177974d0767cd2a380123faf6ee51473bc8e2461
@@ -104,7 +104,7 @@ if ! git -C "${verl_root}" merge-base --is-ancestor \
   exit 1
 fi
 actual_verl_patch_sha256="$({
-  git -C "${verl_root}" diff --full-index --binary \
+  git -C "${verl_root}" diff --full-index --binary --unified=0 \
     "${expected_verl_upstream_base}..${actual_verl_head}"
 } | sha256sum | cut -d ' ' -f 1)"
 if [[ "${actual_verl_patch_sha256}" != "${expected_verl_patch_sha256}" ]]; then

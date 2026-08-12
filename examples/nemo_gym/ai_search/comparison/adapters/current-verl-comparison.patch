@@ -2,10 +2,7 @@ diff --git a/verl/trainer/ppo/v1/agent_loop_tq.py b/verl/trainer/ppo/v1/agent_lo
 index 05f5604315f5d4902353caaffd0c36cb3129806c..d87001a92d2ac0b244d3eb3bcbcc88059fe11545 100644
 --- a/verl/trainer/ppo/v1/agent_loop_tq.py
 +++ b/verl/trainer/ppo/v1/agent_loop_tq.py
-@@ -216,6 +216,15 @@ class AgentLoopWorkerTQ(AgentLoopWorker):
-                     "min_global_steps": field["extra_fields"].get("min_global_steps"),
-                     # max_global_steps: end generation model weights version of this trajectory
-                     "max_global_steps": field["extra_fields"].get("max_global_steps"),
+@@ -218,0 +219,9 @@ class AgentLoopWorkerTQ(AgentLoopWorker):
 +                    # Scalar, measurement-only Search-R1 work counters. Keeping
 +                    # them in TransferQueue tags avoids a full rollout-text dump
 +                    # on every timed step.
@@ -15,17 +12,11 @@ index 05f5604315f5d4902353caaffd0c36cb3129806c..d87001a92d2ac0b244d3eb3bcbcc8805
 +                    "search_errors": field["extra_fields"].get("search_errors"),
 +                    "invalid_actions": field["extra_fields"].get("invalid_actions"),
 +                    "trajectory_wall_seconds": field["extra_fields"].get("wall_time_seconds"),
-                 }
-             )
- 
 diff --git a/verl/trainer/ppo/v1/trainer_base.py b/verl/trainer/ppo/v1/trainer_base.py
 index f510875d150558105811638d3152c0b22db0467c..598255647d1419889949337ff21346a858c0704b 100644
 --- a/verl/trainer/ppo/v1/trainer_base.py
 +++ b/verl/trainer/ppo/v1/trainer_base.py
-@@ -1741,6 +1741,28 @@ class PPOTrainer(ABC):
-         global_token_num = (prompt_length + response_length).tolist()
-         min_global_steps = np.array([tag["min_global_steps"] for tag in batch.tags], dtype=int)[non_padding_mask]
-         max_global_steps = np.array([tag["max_global_steps"] for tag in batch.tags], dtype=int)[non_padding_mask]
+@@ -1743,0 +1744,22 @@ class PPOTrainer(ABC):
 +        valid_tags = [
 +            tag
 +            for tag, keep in zip(batch.tags, non_padding_mask, strict=True)
@@ -48,14 +39,5 @@ index f510875d150558105811638d3152c0b22db0467c..598255647d1419889949337ff21346a8
 +            trajectory_wall = np.asarray(trajectory_wall, dtype=float)
 +            work_metrics["work/trajectory_wall_seconds_mean"] = trajectory_wall.mean()
 +            work_metrics["work/trajectory_wall_seconds_max"] = trajectory_wall.max()
- 
-         # Only fetch speculative decoding stats when rollout writes them.
-         spec_drafts = spec_accepts = spec_verifies = None
-@@ -1786,6 +1808,7 @@ class PPOTrainer(ABC):
-         metrics.update(compute_throughout_metrics(batch=batch, timing_raw=timing_raw, n_gpus=n_gpus))
-         gradient_norm = metrics.get("actor/grad_norm", None)
-         metrics.update(compute_variance_proxy_metrics(batch=metrics_batch, gradient_norm=gradient_norm))
+@@ -1788,0 +1811 @@ class PPOTrainer(ABC):
 +        metrics.update(work_metrics)
- 
-         # 3. other auxiliary metrics
-         if non_padding_mask.any():
