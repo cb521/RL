@@ -195,6 +195,7 @@ unset AI_SEARCH_TRACE_PATH AI_SEARCH_TRACE_SAMPLE_RATE TENSORBOARD_DIR
 unset SEARCH_R1_NSYS_PROFILE_ROLLOUT_ID
 nsys_executable=disabled
 nsys_version=disabled
+nsys_report_timeout_seconds=disabled
 if [[ "${observability_mode}" != baseline ]]; then
   export AI_SEARCH_TRACE_PATH="${output_dir}/trajectory-spans.jsonl"
   export AI_SEARCH_TRACE_SAMPLE_RATE="${trace_sample_rate}"
@@ -221,6 +222,12 @@ if [[ "${observability_mode}" == profile ]]; then
   fi
   mkdir -p "${NSYS_TMPDIR}"
   export SEARCH_R1_NSYS_PROFILE_ROLLOUT_ID=1
+  nsys_report_timeout_seconds="${SEARCH_R1_SLIME_NSYS_REPORT_TIMEOUT_SECONDS:-300}"
+  if [[ "${nsys_report_timeout_seconds}" == *[!0-9]* ]] \
+    || (( nsys_report_timeout_seconds < 1 )); then
+    echo "SEARCH_R1_SLIME_NSYS_REPORT_TIMEOUT_SECONDS must be a positive integer." >&2
+    exit 1
+  fi
 fi
 export SEARCH_R1_EVAL_FILE="${eval_file}"
 export SEARCH_R1_COMMON_EVAL_DIR="${output_dir}/common-eval"
@@ -268,6 +275,9 @@ export PYTHONUNBUFFERED=1
   printf 'nsys_target_nvtx_scope=%s\n' "$([[ "${observability_mode}" == profile ]] && echo actor-rank-0-full-outer-step || echo disabled)"
   printf 'nsys_collection_end=%s\n' "$([[ "${observability_mode}" == profile ]] && echo actor-process-exit || echo disabled)"
   printf 'nsys_post_range_activity=%s\n' "$([[ "${observability_mode}" == profile ]] && echo present || echo disabled)"
+  printf 'nsys_process_wait=%s\n' "$([[ "${observability_mode}" == profile ]] && echo primary || echo disabled)"
+  printf 'nsys_report_ready_gate=%s\n' "$([[ "${observability_mode}" == profile ]] && echo before-ray-stop || echo disabled)"
+  printf 'nsys_report_timeout_seconds=%s\n' "${nsys_report_timeout_seconds}"
   printf 'nsys_nvtx_string_match=%s\n' "$([[ "${observability_mode}" == profile ]] && echo dynamic-full || echo disabled)"
   printf 'nsys_rollout_engine_scope=%s\n' "$([[ "${observability_mode}" == profile ]] && echo missing || echo disabled)"
   printf 'formal_parity_result=%s\n' "$([[ "${run_mode}" == campaign && "${observability_mode}" == clean ]] && echo candidate || echo false)"
@@ -398,7 +408,7 @@ if [[ "${observability_mode}" == profile ]]; then
   # actor in Nsight/CUPTI. The report therefore also contains later rank-zero
   # activity, while the named range preserves the exact target-step boundary.
   runtime_env_json=$(printf \
-    '{"env_vars":{"PYTHONPATH":"%s","PATH":"%s","NSYS_TMPDIR":"%s","CUDA_DEVICE_MAX_CONNECTIONS":"1","SEARCH_R1_RETRIEVER_URL":"%s","SEARCH_R1_EVAL_FILE":"%s","SEARCH_R1_COMMON_EVAL_DIR":"%s","TENSORBOARD_DIR":"%s","AI_SEARCH_TRACE_PATH":"%s","AI_SEARCH_TRACE_SAMPLE_RATE":"%s","SEARCH_R1_NSYS_PROFILE_ROLLOUT_ID":"1","NSYS_NVTX_PROFILER_REGISTER_ONLY":"0"},"nsight":{"trace":"cuda,nvtx,cublas,nccl,osrt","cuda-memory-usage":"true","sample":"none","cpuctxsw":"none","capture-range":"nvtx","nvtx-capture":"search_r1_outer_step","capture-range-end":"none","kill":"none","o":"%s/slime_actor_%%p"}}' \
+    '{"env_vars":{"PYTHONPATH":"%s","PATH":"%s","NSYS_TMPDIR":"%s","CUDA_DEVICE_MAX_CONNECTIONS":"1","SEARCH_R1_RETRIEVER_URL":"%s","SEARCH_R1_EVAL_FILE":"%s","SEARCH_R1_COMMON_EVAL_DIR":"%s","TENSORBOARD_DIR":"%s","AI_SEARCH_TRACE_PATH":"%s","AI_SEARCH_TRACE_SAMPLE_RATE":"%s","SEARCH_R1_NSYS_PROFILE_ROLLOUT_ID":"1","NSYS_NVTX_PROFILER_REGISTER_ONLY":"0"},"nsight":{"trace":"cuda,nvtx,cublas,nccl,osrt","cuda-memory-usage":"true","sample":"none","cpuctxsw":"none","capture-range":"nvtx","nvtx-capture":"search_r1_outer_step","capture-range-end":"none","wait":"primary","kill":"none","o":"%s/slime_actor_%%p"}}' \
     "${PYTHONPATH}" \
     "${PATH}" \
     "${NSYS_TMPDIR}" \
@@ -425,3 +435,20 @@ ray job submit \
   --address=http://127.0.0.1:8265 \
   --runtime-env-json="${runtime_env_json}" \
   -- "${command[@]}"
+
+if [[ "${observability_mode}" == profile ]]; then
+  report_deadline=$((SECONDS + nsys_report_timeout_seconds))
+  while true; do
+    report_count=$(find "${output_dir}" -maxdepth 1 -type f \
+      -name 'slime_actor_*.nsys-rep' -size +0c | wc -l)
+    if (( report_count > 0 )); then
+      break
+    fi
+    if (( SECONDS >= report_deadline )); then
+      echo "Timed out waiting for the rank-zero Nsight report before Ray shutdown." >&2
+      exit 1
+    fi
+    sleep 1
+  done
+  echo "SEARCH_R1_SLIME_NSYS_REPORT_READY reports=${report_count}"
+fi

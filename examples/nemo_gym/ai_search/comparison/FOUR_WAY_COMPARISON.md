@@ -136,7 +136,9 @@ data order, or fixed step-500 headline result.
   because ending a full-step collection inside `range_pop()` can deadlock the
   Ray actor in Nsight/CUPTI. The named range still identifies the exact target
   step, but aggregate Nsight tables also contain later rank-zero activity and
-  are labeled accordingly. Other actor ranks and the separate SGLang rollout
+  are labeled accordingly. Nsight waits for the primary actor process rather
+  than its re-parented children, and the launcher keeps Ray alive until the
+  rank-zero report is ready. Other actor ranks and the separate SGLang rollout
   engines are explicitly recorded as missing; clean and baseline runs never
   enter that branch. Full debug rollout serialization is campaign-only and is
   disabled in smoke and timed performance runs.
