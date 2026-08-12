@@ -392,6 +392,7 @@ def test_slime_checkpoint_conversion_requires_exact_roundtrip() -> None:
         "verify_safetensors_equivalence.py",
         "safetensors-equivalence.json",
         "checkpoint-files.sha256",
+        'chmod -R a+rX -- "${ref_load}"',
         "timed_benchmark_work",
         "SEARCH_R1_SLIME_CHECKPOINT_PREP_PASS",
     ):

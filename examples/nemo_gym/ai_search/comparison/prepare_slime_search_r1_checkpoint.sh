@@ -140,6 +140,7 @@ assert manifest["slime_source_head"] == sys.argv[4]
 assert manifest["slime_patch_sha256"] == sys.argv[5]
 assert manifest["verification"]["bitwise_equal"] is True
 PY
+  chmod -R a+rX -- "${ref_load}"
   echo "SEARCH_R1_SLIME_CHECKPOINT_REUSE_PASS ${ref_load}"
   exit 0
 fi
@@ -263,4 +264,8 @@ PY
 
 mv -- "${staging_dir}" "${ref_load}"
 staging_dir=""
+# Conversion normally runs as root inside the pinned slime container. Keep the
+# verified checkpoint immutable to non-owners, but make directories traversable
+# and artifacts readable by the host-side evidence collector.
+chmod -R a+rX -- "${ref_load}"
 echo "SEARCH_R1_SLIME_CHECKPOINT_PREP_PASS ${ref_load}"
