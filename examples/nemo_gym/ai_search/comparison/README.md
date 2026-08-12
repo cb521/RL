@@ -476,10 +476,13 @@ SEARCH_R1_RUN_MODE=performance \
   bash examples/nemo_gym/ai_search/comparison/run_slime_search_r1.sh
 ```
 
-The slime launcher uses four actor GPUs and four rollout GPUs with colocated
-lifecycle management. It keeps the conversion and initialization outside the
-measured update window, emits TensorBoard and raw rollout artifacts, and uses
-the common evaluation hook for campaign checkpoints. Set
+The slime launcher colocates its actor and rollout engines across the same
+eight physical GPUs. Both logical pools therefore report eight GPUs; they are
+not additive, and the manifest records all three values so an accidental
+four-GPU placement group cannot enter the aligned table. It keeps conversion
+and initialization outside the measured update window, emits TensorBoard and
+raw rollout artifacts, and uses the common evaluation hook for campaign
+checkpoints. Set
 `SEARCH_R1_PRINT_COMMAND=1` on any external launcher to validate and print the
 fully resolved command without starting Ray or allocating model memory.
 

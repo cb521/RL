@@ -249,6 +249,7 @@ def test_current_verl_launcher_freezes_aligned_protocol() -> None:
     for fragment in required_fragments:
         assert fragment in source
     assert 'if [[ "${num_gpus}" != "8" ]]' in source
+    assert "optimizer_updates_per_outer_step=%s" in source
 
 
 def test_slime_launcher_freezes_aligned_protocol() -> None:
@@ -263,8 +264,8 @@ def test_slime_launcher_freezes_aligned_protocol() -> None:
         "expected_eval_sha256=7c7d10d003dce8b0c6c2c0c4177974d0767cd2a380123faf6ee51473bc8e2461",
         "prompts_per_step=8\n    num_rollout=4\n    global_batch_size=40",
         "prompts_per_step=512\n    num_rollout=500\n    global_batch_size=256",
-        "--actor-num-gpus-per-node 4",
-        "--rollout-num-gpus 4",
+        '--actor-num-gpus-per-node "${num_gpus}"',
+        '--rollout-num-gpus "${num_gpus}"',
         "--colocate",
         "--n-samples-per-prompt 5",
         "--rollout-max-prompt-len 2048",
@@ -298,6 +299,7 @@ def test_slime_launcher_freezes_aligned_protocol() -> None:
     for fragment in required_fragments:
         assert fragment in source
     assert 'if [[ "${num_gpus}" != "8" ]]' in source
+    assert "physical_gpus=%s\\nactor_gpus=%s\\nrollout_gpus=%s" in source
     assert "pkill" not in source
 
 

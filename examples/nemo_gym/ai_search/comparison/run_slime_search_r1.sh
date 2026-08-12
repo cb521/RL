@@ -141,7 +141,7 @@ if [[ "${retriever_url}" != http://*/retrieve && "${retriever_url}" != https://*
   exit 1
 fi
 if [[ "${num_gpus}" != "8" ]]; then
-  echo "Aligned slime runs require exactly eight total actor-plus-rollout GPUs." >&2
+  echo "Aligned slime runs require exactly eight colocated physical GPUs." >&2
   exit 1
 fi
 if [[ "${seed}" == *[!0-9]* || -z "${seed}" ]]; then
@@ -216,7 +216,8 @@ export PYTHONUNBUFFERED=1
   printf 'eval_sha256=%s\n' "${expected_eval_sha256}"
   printf 'retriever_url=%s\n' "${retriever_url}"
   printf 'seed=%s\n' "${seed}"
-  printf 'actor_gpus=4\nrollout_gpus=4\ncolocated=true\n'
+  printf 'physical_gpus=%s\nactor_gpus=%s\nrollout_gpus=%s\ncolocated=true\n' \
+    "${num_gpus}" "${num_gpus}" "${num_gpus}"
   printf 'prompts_per_rollout=%s\n' "${prompts_per_step}"
   printf 'rollouts_per_prompt=5\n'
   printf 'trajectories_per_rollout=%s\n' "$((prompts_per_step * 5))"
@@ -245,8 +246,8 @@ source "${slime_root}/scripts/models/qwen2.5-7B.sh"
 command=(
   python3 "${slime_root}/train.py"
   --actor-num-nodes 1
-  --actor-num-gpus-per-node 4
-  --rollout-num-gpus 4
+  --actor-num-gpus-per-node "${num_gpus}"
+  --rollout-num-gpus "${num_gpus}"
   --colocate
   "${MODEL_ARGS[@]}"
   --hf-checkpoint "${model_path}"

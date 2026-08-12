@@ -111,7 +111,9 @@ aligned scoreboard.
   its configured `format_score=0.2` and requires two `<answer>` blocks because
   it receives `prompt + response`, relying on the example answer in the prompt.
   Preserve SGLang token IDs/log probabilities and the observation loss mask.
-  Record its actor/rollout GPU split rather than hiding it. Use slime's public
+  Colocate both logical actor and rollout pools on the same eight physical
+  GPUs, and record all three counts rather than presenting the logical pools
+  as additive. Use slime's public
   before-train-step hook to hold LR constant across the ten optimizer
   mini-batches in one outer step, matching the other three schedulers; the hook
   does not change gradients or optimizer work. A separate, frozen
