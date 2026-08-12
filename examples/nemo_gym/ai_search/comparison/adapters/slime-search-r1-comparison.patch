@@ -16,28 +16,26 @@ index 7662a0de69859290d8cfffd00ac62e61649ebffd..1650f8f74d78a3d80d786d180e064a5a
          self._rollout_manager = rollout_manager
          return ray.get([actor.set_rollout_manager.remote(rollout_manager) for actor in self._actor_handlers])
 diff --git a/slime/ray/train_actor.py b/slime/ray/train_actor.py
-index a8ba6ddc645646fdfe7444b2dc2dc7c1d7ca8be9..34ecd0fa914397c24bd044c3af6b89aec14ebe0a 100644
+index a8ba6ddc645646fdfe7444b2dc2dc7c1d7ca8be9..cd5945db8c63ab6d7e7b154ac9d23c79cd33434a 100644
 --- a/slime/ray/train_actor.py
 +++ b/slime/ray/train_actor.py
-@@ -98,6 +98,22 @@ class TrainRayActor(RayActor):
+@@ -98,6 +98,20 @@ class TrainRayActor(RayActor):
          clear_memory()
          print_memory("after TrainRayActor.clear_memory")
  
 +    def start_nsys_profile(self):
-+        """Start a process-local Nsight capture at an outer-step boundary."""
++        """Open the NVTX range used for one process-local Nsight capture."""
 +        if self.args.debug_rollout_only:
 +            return
 +        torch.cuda.synchronize()
-+        torch.cuda.profiler.start()
 +        torch.cuda.nvtx.range_push("search_r1_outer_step")
 +
 +    def stop_nsys_profile(self):
-+        """Close the outer-step range and stop its process-local capture."""
++        """Synchronize the profiled work and close its NVTX capture range."""
 +        if self.args.debug_rollout_only:
 +            return
 +        torch.cuda.synchronize()
 +        torch.cuda.nvtx.range_pop()
-+        torch.cuda.profiler.stop()
 +
      @abc.abstractmethod
      def sleep(self, tags):

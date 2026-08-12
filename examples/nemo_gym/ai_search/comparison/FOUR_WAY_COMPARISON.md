@@ -22,7 +22,7 @@ explicit adapters.
 | NeMo RL | This repository | Recorded in each run manifest | Strict text-action reproduction |
 | Original Search-R1 | [PeterGriffinJin/Search-R1](https://github.com/PeterGriffinJin/Search-R1) | Upstream base `598e61bd1d36895726d28a8d06b3a15bed19f5d3`; aligned patch head `8f4c5b91e4092fb4d8e858cee0689d339aaf310f` | Paper's public veRL fork plus a disclosed comparison patch stack |
 | Current veRL | [verl-project/verl](https://github.com/verl-project/verl) | Upstream base `5cfb74fa04c7f6e5d98260b8f05157c6a9402695`; measurement-only patch head `fb72e8b195095ac3334e870176eb6eaa80184001` | Current Agent Loop plus disclosed Search-R1 and measurement adapters |
-| slime | [THUDM/slime](https://github.com/THUDM/slime/tree/main/examples/search-r1) | Upstream base `a74ae3a0ad16bd8b769d5386738e8ae3d1269d7e`; measurement-only patch head `3c30f8b4954e40f7baa0073d83a62134c1aec82b` | Published `Search-R1 lite` example plus disclosed alignment and profiling adapters |
+| slime | [THUDM/slime](https://github.com/THUDM/slime/tree/main/examples/search-r1) | Upstream base `a74ae3a0ad16bd8b769d5386738e8ae3d1269d7e`; measurement-only patch head `fa05c88d13b7419893be1c19507b6df8b47c7a34` | Published `Search-R1 lite` example plus disclosed alignment and profiling adapters |
 
 The current veRL row is not an upstream runnable Search-R1 recipe. Its main
 branch retains `preprocess_search_r1_dataset.py`,
@@ -129,8 +129,8 @@ data order, or fixed step-500 headline result.
   before-train-step hook to hold LR constant across the ten optimizer
   mini-batches in one outer step, matching the other three schedulers; the hook
   does not change gradients or optimizer work. A separate, frozen
-  measurement-only patch brackets one outer step with CUDA profiler API calls
-  on actor processes; clean and baseline runs never enter that branch. Full
+  measurement-only patch brackets one outer step with an NVTX capture range on
+  actor processes; clean and baseline runs never enter that branch. Full
   debug rollout serialization is campaign-only and is disabled in smoke and
   timed performance runs.
 - **NeMo RL:** use `grpo_qwen2_5_7b_search_r1.yaml` with training shuffle

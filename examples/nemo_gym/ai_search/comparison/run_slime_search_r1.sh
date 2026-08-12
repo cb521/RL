@@ -22,8 +22,8 @@ num_gpus="${SEARCH_R1_NUM_GPUS:-8}"
 allow_nonformal_preflight="${SEARCH_R1_ALLOW_NONFORMAL_PREFLIGHT:-0}"
 
 expected_slime_base=a74ae3a0ad16bd8b769d5386738e8ae3d1269d7e
-expected_slime_patched_head=3c30f8b4954e40f7baa0073d83a62134c1aec82b
-expected_slime_patch_sha256=50b55d2602e0a9425dbaab5e16430080a54b39e9b340627f857addd3cdb7cb5d
+expected_slime_patched_head=fa05c88d13b7419893be1c19507b6df8b47c7a34
+expected_slime_patch_sha256=fc3e80b7f5d2daa70ba4234745cb6a0ae8e6b7712efa47a20de6f916220f959c
 expected_model_revision=d149729398750b98c0af14eb82c78cfe92750796
 expected_train_sha256=64325c44a1ac79c53fc70ad36551e34b4d2ac0fa79cf0d3cca1c4d244bdeaa39
 expected_eval_sha256=7c7d10d003dce8b0c6c2c0c4177974d0767cd2a380123faf6ee51473bc8e2461
@@ -381,11 +381,11 @@ ray start \
 trap 'ray stop --force >/dev/null 2>&1 || true' EXIT INT TERM
 
 if [[ "${observability_mode}" == profile ]]; then
-  # Each Megatron actor closes its own CUDA-profiler range. Generate the four
-  # reports asynchronously so cudaProfilerStop does not block every Ray actor
-  # while Nsight finalizes the other ranks. Only the first range is collected.
+  # Each Megatron actor brackets the profiled outer step with a named NVTX
+  # range. Finalize each report asynchronously when that range closes; this
+  # avoids the cuProfilerStop path that can deadlock Ray actors under Nsight.
   runtime_env_json=$(printf \
-    '{"env_vars":{"PYTHONPATH":"%s","PATH":"%s","NSYS_TMPDIR":"%s","CUDA_DEVICE_MAX_CONNECTIONS":"1","SEARCH_R1_RETRIEVER_URL":"%s","SEARCH_R1_EVAL_FILE":"%s","SEARCH_R1_COMMON_EVAL_DIR":"%s","TENSORBOARD_DIR":"%s","AI_SEARCH_TRACE_PATH":"%s","AI_SEARCH_TRACE_SAMPLE_RATE":"%s","SEARCH_R1_NSYS_PROFILE_ROLLOUT_ID":"1"},"nsight":{"trace":"cuda,nvtx,cublas,nccl,osrt","cuda-memory-usage":"true","sample":"none","cpuctxsw":"none","capture-range":"cudaProfilerApi","capture-range-end":"repeat:1:async","kill":"none","o":"slime_actor_%%p"}}' \
+    '{"env_vars":{"PYTHONPATH":"%s","PATH":"%s","NSYS_TMPDIR":"%s","CUDA_DEVICE_MAX_CONNECTIONS":"1","SEARCH_R1_RETRIEVER_URL":"%s","SEARCH_R1_EVAL_FILE":"%s","SEARCH_R1_COMMON_EVAL_DIR":"%s","TENSORBOARD_DIR":"%s","AI_SEARCH_TRACE_PATH":"%s","AI_SEARCH_TRACE_SAMPLE_RATE":"%s","SEARCH_R1_NSYS_PROFILE_ROLLOUT_ID":"1"},"nsight":{"trace":"cuda,nvtx,cublas,nccl,osrt","cuda-memory-usage":"true","sample":"none","cpuctxsw":"none","capture-range":"nvtx","nvtx-capture":"search_r1_outer_step","capture-range-end":"repeat:1:async","kill":"none","o":"slime_actor_%%p"}}' \
     "${PYTHONPATH}" \
     "${PATH}" \
     "${NSYS_TMPDIR}" \
