@@ -189,6 +189,7 @@ The formal clean workload is fixed as follows:
 | Rollout group | Five trajectories per question, exactly 40 requested and completed trajectories per outer step |
 | Update window | Four completed outer steps: step 1 warm-up, steps 2-4 measured |
 | Optimizer work | One optimizer update over all 40 trajectories per outer step; no filtering, retries, or silent replacement |
+| Actor micro-batch | Five trajectories per GPU for NeMo RL and both veRL implementations; slime uses its native dynamic packing with a recorded 9,216-token/GPU cap |
 | Initialization | Model load, engine construction, corpus/index load, compilation, and first health check reported separately |
 | Excluded work | Validation and checkpoint writing disabled in the measured window |
 | Sampling and protocol | The quality-contract values above, including seed, action limits, reward, masks, and E5 top 3 |

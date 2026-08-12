@@ -32,7 +32,7 @@ case "${run_mode}" in
     prompts_per_step=8
     total_steps=1
     ppo_mini_batch_size=40
-    ppo_micro_batch_size=8
+    ppo_micro_batch_size=40
     log_prob_micro_batch_size=8
     val_batch_size=8
     save_freq=-1
@@ -45,7 +45,7 @@ case "${run_mode}" in
     prompts_per_step=8
     total_steps=4
     ppo_mini_batch_size=40
-    ppo_micro_batch_size=8
+    ppo_micro_batch_size=40
     log_prob_micro_batch_size=8
     val_batch_size=8
     save_freq=-1
@@ -255,6 +255,8 @@ export PYTHONUNBUFFERED=1
   printf 'trajectories_per_step=%s\ntotal_steps=%s\n' "$((prompts_per_step * 5))" "${total_steps}"
   printf 'trainer_stop_step=%s\nppo_mini_batch_size=%s\n' "${trainer_stop_step}" "${ppo_mini_batch_size}"
   printf 'ppo_micro_batch_size=%s\nlog_prob_micro_batch_size=%s\n' "${ppo_micro_batch_size}" "${log_prob_micro_batch_size}"
+  printf 'effective_ppo_micro_batch_size_per_gpu=%s\n' \
+    "$((ppo_micro_batch_size / num_gpus))"
   printf 'optimizer=AdamW\noptimizer_lr=1e-6\noptimizer_weight_decay=0.01\n'
   printf 'optimizer_betas=0.9,0.999\noptimizer_epsilon=1e-8\n'
   printf 'lr_warmup_outer_steps=%s\nlr_after_warmup=constant\n' "${lr_warmup_outer_steps}"

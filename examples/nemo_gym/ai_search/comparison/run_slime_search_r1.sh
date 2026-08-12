@@ -225,6 +225,7 @@ export PYTHONUNBUFFERED=1
   printf 'rollouts_per_prompt=5\n'
   printf 'trajectories_per_rollout=%s\n' "$((prompts_per_step * 5))"
   printf 'global_batch_size=%s\n' "${global_batch_size}"
+  printf 'actor_microbatch_mode=dynamic\nactor_max_tokens_per_gpu=9216\n'
   printf 'optimizer_updates_per_rollout=%s\n' "$(((prompts_per_step * 5) / global_batch_size))"
   printf 'num_rollout=%s\n' "${num_rollout}"
   printf 'optimizer=AdamW\noptimizer_lr=1e-6\noptimizer_weight_decay=0.01\n'

@@ -31,7 +31,7 @@ case "${run_mode}" in
     prompts_per_step=8
     total_steps=1
     ppo_mini_batch_size=40
-    ppo_micro_batch_size_per_gpu=1
+    ppo_micro_batch_size_per_gpu=5
     log_prob_micro_batch_size_per_gpu=1
     agent_workers=40
     save_freq=-1
@@ -43,7 +43,7 @@ case "${run_mode}" in
     prompts_per_step=8
     total_steps=4
     ppo_mini_batch_size=40
-    ppo_micro_batch_size_per_gpu=1
+    ppo_micro_batch_size_per_gpu=5
     log_prob_micro_batch_size_per_gpu=1
     agent_workers=40
     save_freq=-1
