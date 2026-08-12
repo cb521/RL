@@ -75,6 +75,14 @@ _WORK_NAMES = (
     "trajectory_wall_seconds_max",
 )
 
+_RETRIEVAL_OPERATIONS = {
+    "retrieval",
+    "retrieval_http",
+    "search",
+    "search_tool",
+    "retrieve",
+}
+
 
 def _add_canonical_throughput(
     step: dict[str, Any], *, training_gpus: int
@@ -221,10 +229,21 @@ def analyze_traces(
     operation_intervals: dict[str, list[tuple[int, int]]] = defaultdict(list)
     attribute_values: dict[str, list[float]] = defaultdict(list)
     trace_bounds: dict[str, list[tuple[int, int]]] = defaultdict(list)
-    resource_batch_ids = {
+    resource_server_batch_ids = {
         str(attributes["provider_batch_id"])
         for event in events
         if event.get("component") == "resource_server"
+        and isinstance((attributes := event.get("attributes")), dict)
+        and isinstance(attributes.get("provider_batch_id"), str)
+    }
+    client_batch_ids = {
+        str(attributes["provider_batch_id"])
+        for event in events
+        if event.get("component") != "search_r1_e5"
+        and (
+            event.get("operation") in _RETRIEVAL_OPERATIONS
+            or event.get("component") == "resource_server"
+        )
         and isinstance((attributes := event.get("attributes")), dict)
         and isinstance(attributes.get("provider_batch_id"), str)
     }
@@ -245,12 +264,14 @@ def analyze_traces(
             else None
         )
         # A long-lived retriever trace can contain smoke probes and spans from
-        # earlier framework runs. When resource spans are present, retain only
-        # retriever work linked to this run's provider batches.
+        # earlier framework runs. All four clients propagate provider batch
+        # IDs, though only NeMo names its client component ``resource_server``.
+        # When any client spans are present, retain only E5 work linked to this
+        # run instead of contaminating later frameworks with earlier traffic.
         if (
             component == "search_r1_e5"
-            and resource_batch_ids
-            and batch_id not in resource_batch_ids
+            and client_batch_ids
+            and batch_id not in client_batch_ids
         ):
             continue
         span_count += 1
@@ -264,13 +285,15 @@ def analyze_traces(
         all_intervals.append(interval)
         if operation in {"model_generate", "model_generation"}:
             model_intervals.append(interval)
-        if (
-            operation
-            in {"retrieval", "retrieval_http", "search", "search_tool", "retrieve"}
-            or component in {"resource_server", "search_r1_e5"}
-        ):
+        if operation in _RETRIEVAL_OPERATIONS or component in {
+            "resource_server",
+            "search_r1_e5",
+        }:
             retrieval_intervals.append(interval)
-        if component == "search_r1_agent" and operation == "rollout":
+        if component != "search_r1_e5" and (
+            operation in _RETRIEVAL_OPERATIONS
+            or operation in {"rollout", "model_generate", "model_generation"}
+        ):
             trajectory_trace_ids.add(str(event.get("trace_id", "")))
         status_counts[str(event.get("status", "unknown"))] += 1
         trace_id = str(event.get("trace_id", ""))
@@ -350,9 +373,10 @@ def analyze_traces(
             name: summarize(values) for name, values in sorted(attribute_values.items())
         },
         "provider_batch_links": {
-            "resource_batches": len(resource_batch_ids),
+            "client_batches": len(client_batch_ids),
+            "resource_server_batches": len(resource_server_batch_ids),
             "retriever_batches": len(retriever_batch_ids),
-            "linked_batches": len(resource_batch_ids & retriever_batch_ids),
+            "linked_batches": len(client_batch_ids & retriever_batch_ids),
         },
     }
 

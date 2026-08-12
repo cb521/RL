@@ -68,6 +68,8 @@ def test_analyze_traces_links_resource_and_retriever_batches(tmp_path) -> None:
     report = analyze_traces([trace_path])
     assert report["span_count"] == 3
     assert report["trajectory_count"] == 1
+    assert report["provider_batch_links"]["client_batches"] == 1
+    assert report["provider_batch_links"]["resource_server_batches"] == 1
     assert report["provider_batch_links"]["linked_batches"] == 1
     assert report["provider_batch_links"]["retriever_batches"] == 1
     assert report["operations_ms"]["resource_server/search"]["p95"] == 10.0
@@ -75,6 +77,56 @@ def test_analyze_traces_links_resource_and_retriever_batches(tmp_path) -> None:
         "wall_union_ms"
     ] == 10.0
     assert report["timeline_activity"]["retrieval_wall_union_ms"] == 10.0
+
+
+def test_analyze_traces_filters_shared_e5_trace_for_direct_http_clients(
+    tmp_path,
+) -> None:
+    trace_path = tmp_path / "trace.jsonl"
+    base = {
+        "event": "span",
+        "status": "ok",
+        "start_unix_ns": 1_000_000_000,
+        "end_unix_ns": 1_010_000_000,
+        "duration_ms": 10.0,
+    }
+    _write_jsonl(
+        trace_path,
+        [
+            base
+            | {
+                "trace_id": "current-trajectory",
+                "component": "current_verl",
+                "operation": "retrieval",
+                "attributes": {"provider_batch_id": "current-batch"},
+            },
+            base
+            | {
+                "trace_id": "retriever-batch:current-batch",
+                "component": "search_r1_e5",
+                "operation": "retrieve",
+                "attributes": {"provider_batch_id": "current-batch"},
+            },
+            base
+            | {
+                "trace_id": "retriever-batch:earlier-batch",
+                "component": "search_r1_e5",
+                "operation": "retrieve",
+                "attributes": {"provider_batch_id": "earlier-batch"},
+            },
+        ],
+    )
+
+    report = analyze_traces([trace_path])
+
+    assert report["span_count"] == 2
+    assert report["trajectory_count"] == 1
+    assert report["provider_batch_links"] == {
+        "client_batches": 1,
+        "resource_server_batches": 0,
+        "retriever_batches": 1,
+        "linked_batches": 1,
+    }
 
 
 def test_analyze_traces_collapses_concurrency_and_measures_overlap(tmp_path) -> None:
