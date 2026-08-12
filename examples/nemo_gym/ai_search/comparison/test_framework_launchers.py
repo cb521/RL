@@ -385,6 +385,7 @@ def test_slime_launcher_freezes_aligned_protocol() -> None:
         'observability_mode="${SEARCH_R1_OBSERVABILITY_MODE:-clean}"',
         "SEARCH_R1_NSYS_PROFILE_ROLLOUT_ID=1",
         '"capture-range":"cudaProfilerApi"',
+        '"capture-range-end":"repeat:1:async"',
         '"sample":"none"',
         "engine_prometheus_scope=not-collected-native-always-on",
         "engine_prometheus_scope=sglang-router-and-engine-http-servers",
