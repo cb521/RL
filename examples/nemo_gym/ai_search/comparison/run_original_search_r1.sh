@@ -215,7 +215,7 @@ export PYTHONPATH="${comparison_dir}:${search_r1_root}${PYTHONPATH:+:${PYTHONPAT
 export PATH="$(dirname -- "${runtime_python_path}"):${PATH}"
 unset AI_SEARCH_TRACE_PATH AI_SEARCH_TRACE_SAMPLE_RATE AI_SEARCH_METRICS_PATH
 unset AI_SEARCH_TENSORBOARD_DIR AI_SEARCH_PROMETHEUS_PORT
-unset SEARCH_R1_NSYS_PROFILE_STEP SEARCH_R1_NSYS_OUTPUT_PREFIX SEARCH_R1_RAY_TMPDIR
+unset SEARCH_R1_NSYS_PROFILE_STEP SEARCH_R1_NSYS_OUTPUT_PREFIX
 nsys_executable=disabled
 nsys_version=disabled
 if [[ "${observability_mode}" != baseline ]]; then
@@ -247,7 +247,16 @@ if [[ "${observability_mode}" == profile ]]; then
   mkdir -p "${NSYS_TMPDIR}"
   export SEARCH_R1_NSYS_PROFILE_STEP=2
   export SEARCH_R1_NSYS_OUTPUT_PREFIX=original_search_r1_worker_%p
-  export SEARCH_R1_RAY_TMPDIR="${output_dir}/ray"
+  export SEARCH_R1_RAY_TMPDIR="${SEARCH_R1_RAY_TMPDIR:-${output_dir}/ray}"
+  if [[ "${SEARCH_R1_RAY_TMPDIR}" != /* ]]; then
+    echo "SEARCH_R1_RAY_TMPDIR must be an absolute path." >&2
+    exit 1
+  fi
+  if (( ${#SEARCH_R1_RAY_TMPDIR} > 32 )); then
+    echo "SEARCH_R1_RAY_TMPDIR is too long for Ray Unix sockets: ${SEARCH_R1_RAY_TMPDIR}" >&2
+    exit 1
+  fi
+  mkdir -p "${SEARCH_R1_RAY_TMPDIR}"
 fi
 export TOKENIZERS_PARALLELISM=false
 export PYTHONUNBUFFERED=1

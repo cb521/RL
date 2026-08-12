@@ -194,6 +194,7 @@ unset AI_SEARCH_TRACE_PATH AI_SEARCH_TRACE_SAMPLE_RATE
 unset SWANLAB_MODE SWANLAB_LOG_DIR TENSORBOARD_DIR
 nsys_executable=disabled
 nsys_version=disabled
+profile_ray_tmpdir=disabled
 if [[ "${observability_mode}" != baseline ]]; then
   export AI_SEARCH_TRACE_PATH="${output_dir}/trajectory-spans.jsonl"
   export AI_SEARCH_TRACE_SAMPLE_RATE="${trace_sample_rate}"
@@ -202,6 +203,16 @@ if [[ "${observability_mode}" != baseline ]]; then
   export TENSORBOARD_DIR="${output_dir}/tensorboard"
 fi
 if [[ "${observability_mode}" == profile ]]; then
+  profile_ray_tmpdir="${SEARCH_R1_RAY_TMPDIR:-${output_dir}/ray}"
+  if [[ "${profile_ray_tmpdir}" != /* ]]; then
+    echo "SEARCH_R1_RAY_TMPDIR must be an absolute path." >&2
+    exit 1
+  fi
+  if (( ${#profile_ray_tmpdir} > 32 )); then
+    echo "SEARCH_R1_RAY_TMPDIR is too long for Ray Unix sockets: ${profile_ray_tmpdir}" >&2
+    exit 1
+  fi
+  mkdir -p "${profile_ray_tmpdir}"
   nsys_executable="${SEARCH_R1_NSYS_BIN:-$(command -v nsys || true)}"
   if [[ -z "${nsys_executable}" || ! -x "${nsys_executable}" ]]; then
     if [[ "${SEARCH_R1_PRINT_COMMAND:-0}" != 1 ]]; then
@@ -262,7 +273,7 @@ export PYTHONUNBUFFERED=1
     "$([[ "${engine_prometheus_enabled}" == true ]] && echo "${output_dir}/observability/rollout-prometheus.yml" || echo disabled)"
   printf 'swanlab_mode=%s\ntensorboard_dir=%s\n' "${SWANLAB_MODE:-disabled}" "${TENSORBOARD_DIR:-disabled}"
   printf 'nsys_executable=%s\nnsys_version=%s\n' "${nsys_executable}" "${nsys_version}"
-  printf 'nsys_profile_step=%s\nray_tmpdir=%s\n' "$([[ "${observability_mode}" == profile ]] && echo 2 || echo disabled)" "$([[ "${observability_mode}" == profile ]] && echo "${output_dir}/ray" || echo disabled)"
+  printf 'nsys_profile_step=%s\nray_tmpdir=%s\n' "$([[ "${observability_mode}" == profile ]] && echo 2 || echo disabled)" "${profile_ray_tmpdir}"
   printf 'nsys_scope=%s\n' "$([[ "${observability_mode}" == profile ]] && echo actor-and-reference-worker-processes-full-step || echo disabled)"
   printf 'nsys_rollout_engine_scope=%s\n' "$([[ "${observability_mode}" == profile ]] && echo missing || echo disabled)"
   printf 'formal_parity_result=%s\n' "$([[ "${run_mode}" == campaign && "${observability_mode}" == clean ]] && echo candidate || echo false)"
@@ -367,7 +378,7 @@ if [[ "${observability_mode}" == profile ]]; then
     actor_rollout_ref.actor.profiler.all_ranks=true
     actor_rollout_ref.ref.profiler.enable=true
     actor_rollout_ref.ref.profiler.all_ranks=true
-    "+ray_kwargs.ray_init._temp_dir=${output_dir}/ray"
+    "+ray_kwargs.ray_init._temp_dir=${profile_ray_tmpdir}"
   )
 fi
 
