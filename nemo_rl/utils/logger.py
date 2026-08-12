@@ -503,6 +503,9 @@ class SwanlabLogger(LoggerInterface):
         with self._write_lock:
             while self._pending_writes:
                 self._pending_writes.popleft()()
+            if self.run is not None:
+                swanlab.finish()
+                self.run = None
 
     def log_metrics(
         self,
@@ -1140,6 +1143,9 @@ class Logger(LoggerInterface):
 
     def finish(self) -> None:
         """Flush and close backends that need explicit teardown (e.g. wandb)."""
+        if self.gpu_monitor:
+            self.gpu_monitor.stop()
+            self.gpu_monitor = None
         for logger in self.loggers:
             finish = getattr(logger, "finish", None)
             if callable(finish):

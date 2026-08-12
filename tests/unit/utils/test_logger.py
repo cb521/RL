@@ -661,6 +661,8 @@ class TestSwanlabLogger:
         mock_run.log.assert_not_called()
         logger.finish()
         mock_run.log.assert_called_once_with({"gpu_util": 0.5}, step=3)
+        mock_swanlab.finish.assert_called_once_with()
+        assert logger.run is None
 
 
 class TestMLflowLogger:
@@ -1621,6 +1623,28 @@ class TestLogger:
         temp_dir = tempfile.mkdtemp()
         yield temp_dir
         shutil.rmtree(temp_dir)
+
+    def test_finish_stops_gpu_monitor_before_backends(self, temp_dir):
+        logger = Logger(
+            {
+                "wandb_enabled": False,
+                "swanlab_enabled": False,
+                "tensorboard_enabled": False,
+                "mlflow_enabled": False,
+                "monitor_gpus": False,
+                "log_dir": temp_dir,
+            }
+        )
+        gpu_monitor = MagicMock()
+        backend = MagicMock()
+        logger.gpu_monitor = gpu_monitor
+        logger.loggers = [backend]
+
+        logger.finish()
+
+        gpu_monitor.stop.assert_called_once_with()
+        backend.finish.assert_called_once_with()
+        assert logger.gpu_monitor is None
 
     @patch("nemo_rl.utils.logger.WandbLogger")
     @patch("nemo_rl.utils.logger.TensorboardLogger")

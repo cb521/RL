@@ -18,6 +18,7 @@ import pprint
 import time
 
 # Increase the W&B single object size warning threshold. Initially 100_000 (100 KB) -> 10_000_000 (10 MB)
+import ray
 import wandb.util
 
 wandb.util.VALUE_BYTES_LIMIT = 10_000_000
@@ -64,6 +65,36 @@ def parse_args() -> tuple[argparse.Namespace, list[str]]:
     args, overrides = parser.parse_known_args()
 
     return args, overrides
+
+
+def shutdown_runtime(
+    *,
+    nemo_gym: EnvironmentInterface,
+    policy: ColocatablePolicyInterface,
+    policy_generation: GenerationInterface,
+    cluster,
+    logger: Logger,
+) -> None:
+    """Close logging and Ray actors before Python interpreter teardown."""
+    cleanup_steps = (
+        ("logger", logger.finish),
+        (
+            "NeMo Gym environment",
+            lambda: ray.get(nemo_gym.shutdown.remote(), timeout=10),
+        ),
+        ("generation workers", policy_generation.shutdown),
+        (
+            "policy workers",
+            policy.shutdown if policy is not policy_generation else lambda: None,
+        ),
+        ("virtual cluster", cluster.shutdown),
+        ("Ray", ray.shutdown),
+    )
+    for name, cleanup in cleanup_steps:
+        try:
+            cleanup()
+        except Exception as error:
+            print(f"Warning: Failed to shut down {name}: {error}", flush=True)
 
 
 # These types are directly imported from grpo_train since if something about the architecture changes we want to immediately fail.
@@ -266,73 +297,86 @@ The validation set you pass in will directly be used for validation with no addi
     task_to_env = {"nemo_gym": nemo_gym}
     val_task_to_env = task_to_env
 
-    if is_trajectory_collection:
-        collect_trajectories(
+    try:
+        if is_trajectory_collection:
+            collect_trajectories(
+                policy=policy,
+                policy_generation=policy_generation,
+                val_dataloader=val_dataloader,
+                tokenizer=tokenizer,
+                val_task_to_env=val_task_to_env,
+                logger=logger,
+                master_config=master_config,
+            )
+        # Check if async mode is enabled
+        elif config.grpo.async_grpo.enabled:
+            # Async GRPO does not support dynamic sampling, reward scaling, or reward shaping (DAPO features)
+            if config.grpo.use_dynamic_sampling:
+                raise NotImplementedError(
+                    "use_dynamic_sampling is not supported with async GRPO"
+                )
+            if config.grpo.reward_scaling.enabled:
+                raise NotImplementedError(
+                    "reward_scaling is not supported with async GRPO"
+                )
+            if config.grpo.reward_shaping.enabled:
+                raise NotImplementedError(
+                    "reward_shaping is not supported with async GRPO"
+                )
+
+            # Async GRPO does not support multiple dataloaders
+            if config.data["use_multiple_dataloader"]:
+                raise NotImplementedError(
+                    "use_multiple_dataloader is not supported with async GRPO"
+                )
+
+            from nemo_rl.algorithms.grpo import async_grpo_train
+
+            print("🚀 Running async GRPO training")
+
+            # Run async GRPO training
+            async_grpo_train(
+                policy=policy,
+                policy_generation=policy_generation,
+                dataloader=dataloader,
+                val_dataloader=val_dataloader,
+                tokenizer=tokenizer,
+                loss_fn=loss_fn,
+                task_to_env=task_to_env,
+                val_task_to_env=val_task_to_env,
+                logger=logger,
+                checkpointer=checkpointer,
+                grpo_save_state=grpo_state,
+                master_config=master_config,
+                max_trajectory_age_steps=config.grpo.async_grpo.max_trajectory_age_steps,
+                teacher_worker_groups=teacher_worker_groups,
+                alias_to_group_alias=alias_to_group_alias,
+            )
+        else:
+            print("🚀 Running synchronous GRPO training")
+
+            # Run standard GRPO training
+            grpo_train(
+                policy,
+                policy_generation,
+                dataloader,
+                val_dataloader,
+                tokenizer,
+                loss_fn,
+                task_to_env,
+                val_task_to_env,
+                logger,
+                checkpointer,
+                grpo_state,
+                master_config,
+            )
+    finally:
+        shutdown_runtime(
+            nemo_gym=nemo_gym,
             policy=policy,
             policy_generation=policy_generation,
-            val_dataloader=val_dataloader,
-            tokenizer=tokenizer,
-            val_task_to_env=val_task_to_env,
+            cluster=cluster,
             logger=logger,
-            master_config=master_config,
-        )
-    # Check if async mode is enabled
-    elif config.grpo.async_grpo.enabled:
-        # Async GRPO does not support dynamic sampling, reward scaling, or reward shaping (DAPO features)
-        if config.grpo.use_dynamic_sampling:
-            raise NotImplementedError(
-                "use_dynamic_sampling is not supported with async GRPO"
-            )
-        if config.grpo.reward_scaling.enabled:
-            raise NotImplementedError("reward_scaling is not supported with async GRPO")
-        if config.grpo.reward_shaping.enabled:
-            raise NotImplementedError("reward_shaping is not supported with async GRPO")
-
-        # Async GRPO does not support multiple dataloaders
-        if config.data["use_multiple_dataloader"]:
-            raise NotImplementedError(
-                "use_multiple_dataloader is not supported with async GRPO"
-            )
-
-        from nemo_rl.algorithms.grpo import async_grpo_train
-
-        print("🚀 Running async GRPO training")
-
-        # Run async GRPO training
-        async_grpo_train(
-            policy=policy,
-            policy_generation=policy_generation,
-            dataloader=dataloader,
-            val_dataloader=val_dataloader,
-            tokenizer=tokenizer,
-            loss_fn=loss_fn,
-            task_to_env=task_to_env,
-            val_task_to_env=val_task_to_env,
-            logger=logger,
-            checkpointer=checkpointer,
-            grpo_save_state=grpo_state,
-            master_config=master_config,
-            max_trajectory_age_steps=config.grpo.async_grpo.max_trajectory_age_steps,
-            teacher_worker_groups=teacher_worker_groups,
-            alias_to_group_alias=alias_to_group_alias,
-        )
-    else:
-        print("🚀 Running synchronous GRPO training")
-
-        # Run standard GRPO training
-        grpo_train(
-            policy,
-            policy_generation,
-            dataloader,
-            val_dataloader,
-            tokenizer,
-            loss_fn,
-            task_to_env,
-            val_task_to_env,
-            logger,
-            checkpointer,
-            grpo_state,
-            master_config,
         )
 
 
