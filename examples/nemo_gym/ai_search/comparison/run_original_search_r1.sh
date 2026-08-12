@@ -156,13 +156,13 @@ if [[ "${retriever_url}" != http://*/retrieve && "${retriever_url}" != https://*
 fi
 hardware_contract=eight-gpu
 if [[ "${num_gpus}" != "8" ]]; then
-  if [[ "${run_mode}" != smoke ]] \
-    || [[ "${allow_nonformal_preflight}" != "1" ]] \
-    || [[ "${num_gpus}" != "4" ]]; then
-    echo "Aligned original Search-R1 runs require eight GPUs; only an explicitly enabled four-GPU smoke preflight is allowed." >&2
+  if [[ "${allow_nonformal_preflight}" != "1" ]] \
+    || [[ "${num_gpus}" != "4" ]] \
+    || [[ "${run_mode}" == campaign ]]; then
+    echo "Aligned original Search-R1 runs require eight GPUs; only explicitly enabled four-GPU smoke and performance diagnostics are allowed." >&2
     exit 1
   fi
-  hardware_contract=nonformal-four-gpu-smoke
+  hardware_contract="nonformal-four-gpu-${run_mode}"
 fi
 if [[ "${seed}" == *[!0-9]* || -z "${seed}" ]]; then
   echo "SEARCH_R1_SEED must be a non-negative integer." >&2

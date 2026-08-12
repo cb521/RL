@@ -101,7 +101,7 @@ def test_campaign_launchers_save_only_midpoint_and_final_checkpoints() -> None:
     assert "save_interval=250" in _read(SLIME_LAUNCHER)
 
 
-def test_four_gpu_preflight_is_explicit_and_never_formal() -> None:
+def test_four_gpu_diagnostics_are_explicit_and_campaign_stays_eight_gpu() -> None:
     for launcher in (
         NEMO_SEARCH_R1_LAUNCHER,
         ORIGINAL_SEARCH_R1_LAUNCHER,
@@ -111,10 +111,10 @@ def test_four_gpu_preflight_is_explicit_and_never_formal() -> None:
         source = _read(launcher)
         for fragment in (
             'allow_nonformal_preflight="${SEARCH_R1_ALLOW_NONFORMAL_PREFLIGHT:-0}"',
-            '[[ "${run_mode}" != smoke ]]',
             '[[ "${allow_nonformal_preflight}" != "1" ]]',
             '[[ "${num_gpus}" != "4" ]]',
-            "hardware_contract=nonformal-four-gpu-smoke",
+            '[[ "${run_mode}" == campaign ]]',
+            'hardware_contract="nonformal-four-gpu-${run_mode}"',
             "printf 'hardware_contract=%s\\n'",
         ):
             assert fragment in source
