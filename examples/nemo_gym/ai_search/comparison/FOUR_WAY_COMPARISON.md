@@ -131,7 +131,10 @@ aligned scoreboard.
 - **NeMo RL:** use `grpo_qwen2_5_7b_search_r1.yaml` with training shuffle
   disabled for the four-way aligned campaign; the paper-reproduction recipe
   may retain its native shuffle setting. Any diagnostic micro-batch override
-  is a systems preflight, not a quality result.
+  is a systems preflight, not a quality result. The sync trainer prints the
+  already-computed mean generated, environment-observation, and complete
+  response token counts so baseline and observed runs expose the same scalar
+  work without serializing trajectories.
 
 ## Quality and accuracy reporting
 

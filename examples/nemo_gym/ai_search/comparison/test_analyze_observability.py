@@ -247,6 +247,8 @@ Collecting rollouts: 100%|██████████| 40/40 [00:10<00:00, 4.
 📊 Training Results:
   • Avg Reward: 0.10
   • Mean Generation Length: 200.00
+  • Mean Observation Length: 20.00
+  • Mean Response Sequence Length: 220.00
 ⏱️  Timing:
   • Total step time: 10.00s
   • generation: 4.00s (40.0%)
@@ -257,6 +259,8 @@ Collecting rollouts: 100%|██████████| 40/40 [00:08<00:00, 5.
 📊 Training Results:
   • Avg Reward: 0.20
   • Mean Generation Length: 250.00
+  • Mean Observation Length: 25.00
+  • Mean Response Sequence Length: 275.00
 ⏱️  Timing:
   • Total step time: 8.00s
   • generation: 3.00s (37.5%)
@@ -274,6 +278,9 @@ Collecting rollouts: 100%|██████████| 40/40 [00:08<00:00, 5.
     assert report["throughput"]["E2E Model-generated (Tokens/sec)"][
         "mean"
     ] == 1250.0
+    assert report["throughput"]["E2E Response-sequence (Tokens/sec)"][
+        "mean"
+    ] == 1375.0
     assert report["throughput"]["E2E Processed-sequence (Tokens/sec)"][
         "mean"
     ] == 1600.0
@@ -281,6 +288,8 @@ Collecting rollouts: 100%|██████████| 40/40 [00:08<00:00, 5.
     assert report["results"]["mean_generation_length"]["mean"] == 250.0
     assert report["work"]["completed_trajectories"]["mean"] == 40.0
     assert report["work"]["generated_tokens"]["mean"] == 10_000.0
+    assert report["work"]["observation_tokens"]["mean"] == 1_000.0
+    assert report["work"]["response_tokens"]["mean"] == 11_000.0
     assert report["work"]["processed_tokens"]["mean"] == 12_800.0
     assert report["steps"][1]["requested_trajectories"] == 40
 

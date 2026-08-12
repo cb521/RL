@@ -35,6 +35,7 @@ SLIME_CHECKPOINT_PREP = COMPARISON_DIR / "prepare_slime_search_r1_checkpoint.sh"
 SLIME_SEARCH_R1_PATCH = (
     COMPARISON_DIR / "adapters" / "slime-search-r1-comparison.patch"
 )
+GRPO_SYNC = COMPARISON_DIR.parents[3] / "nemo_rl" / "algorithms" / "grpo_sync.py"
 
 
 def _read(path: Path) -> str:
@@ -93,6 +94,19 @@ def test_nemo_search_r1_launcher_freezes_aligned_protocol() -> None:
         "val_temperature": 0.0,
         "val_top_p": 1.0,
     }
+
+
+def test_nemo_sync_trainer_prints_classified_response_work() -> None:
+    source = _read(GRPO_SYNC)
+    for fragment in (
+        'rollout_metrics["mean_gen_tokens_per_sample"]',
+        'rollout_metrics["mean_env_tokens_per_sample"]',
+        'rollout_metrics["mean_total_tokens_per_sample"]',
+        "Mean Generation Length:",
+        "Mean Observation Length:",
+        "Mean Response Sequence Length:",
+    ):
+        assert fragment in source
 
 
 def test_original_search_r1_launcher_freezes_aligned_protocol() -> None:

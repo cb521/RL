@@ -791,6 +791,45 @@ def parse_training_console(
                 "Mean Generation Length x completed trajectories"
             )
 
+        mean_observation = step["results"].get("mean_observation_length")
+        if isinstance(completed, (int, float)) and isinstance(
+            mean_observation, (int, float)
+        ):
+            step["observation_tokens"] = mean_observation * completed
+            step["work_sources"]["observation_tokens"] = (
+                "Mean Observation Length x completed trajectories"
+            )
+
+        mean_response = step["results"].get("mean_response_sequence_length")
+        if isinstance(completed, (int, float)) and isinstance(
+            mean_response, (int, float)
+        ):
+            step["response_tokens"] = mean_response * completed
+            step["work_sources"]["response_tokens"] = (
+                "Mean Response Sequence Length x completed trajectories"
+            )
+        elif "generated_tokens" in step and "observation_tokens" in step:
+            step["response_tokens"] = (
+                step["generated_tokens"] + step["observation_tokens"]
+            )
+            step["work_sources"]["response_tokens"] = (
+                "generated_tokens + observation_tokens"
+            )
+
+        if {
+            "generated_tokens",
+            "observation_tokens",
+            "response_tokens",
+        }.issubset(step) and not math.isclose(
+            step["generated_tokens"] + step["observation_tokens"],
+            step["response_tokens"],
+            rel_tol=1e-6,
+            abs_tol=1.0,
+        ):
+            raise ValueError(
+                f"NeMo step {step['step']} has inconsistent response-token work"
+            )
+
         mean_total = step["results"].get("mean_total_tokens_per_sample")
         if isinstance(completed, (int, float)) and isinstance(
             mean_total, (int, float)
@@ -826,7 +865,8 @@ def parse_training_console(
         "processed_tokens": (
             "unpadded training-sequence tokens used by NeMo's native throughput"
         ),
-        "observation_tokens": "missing from the standard NeMo console",
+        "observation_tokens": "environment/retrieval tokens excluded from policy loss",
+        "response_tokens": "model-generated plus environment/retrieval tokens",
         "native_throughput": (
             "verbatim framework labels retained separately and never compared as "
             "model-generated throughput"

@@ -684,6 +684,12 @@ def grpo_train_sync(
                     metrics_logging_data["mean_gen_tokens_per_sample"] = (
                         rollout_metrics["mean_gen_tokens_per_sample"]
                     )
+                    metrics_logging_data["mean_env_tokens_per_sample"] = (
+                        rollout_metrics["mean_env_tokens_per_sample"]
+                    )
+                    metrics_logging_data["mean_response_tokens_per_sample"] = (
+                        rollout_metrics["mean_total_tokens_per_sample"]
+                    )
                     logger.log_metrics(rollout_metrics, total_steps + 1, prefix="train")
 
                 # ── Per-sample driver compute on slice ────────────────
@@ -1316,6 +1322,15 @@ def grpo_train_sync(
                 print(f"  • Avg Reward: {np.mean(rewards.numpy()):.4f}")
             print(
                 f"  • Mean Generation Length: {metrics_logging_data['mean_gen_tokens_per_sample']:.4f}",
+                flush=True,
+            )
+            print(
+                f"  • Mean Observation Length: {metrics_logging_data['mean_env_tokens_per_sample']:.4f}",
+                flush=True,
+            )
+            print(
+                "  • Mean Response Sequence Length: "
+                f"{metrics_logging_data['mean_response_tokens_per_sample']:.4f}",
                 flush=True,
             )
 
