@@ -165,6 +165,46 @@ def _inside_window(
     return window is None or window[0] <= timestamp_seconds <= window[1]
 
 
+def _merge_intervals(
+    intervals: Iterable[tuple[int, int]],
+) -> list[tuple[int, int]]:
+    merged: list[tuple[int, int]] = []
+    for start, end in sorted(intervals):
+        if end < start:
+            raise ValueError(f"Trace interval ends before it starts: {start}, {end}")
+        if not merged or start > merged[-1][1]:
+            merged.append((start, end))
+            continue
+        merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+    return merged
+
+
+def _interval_duration_ms(intervals: Iterable[tuple[int, int]]) -> float:
+    return sum(end - start for start, end in _merge_intervals(intervals)) / 1e6
+
+
+def _interval_intersection_ms(
+    first: Iterable[tuple[int, int]], second: Iterable[tuple[int, int]]
+) -> float:
+    first_merged = _merge_intervals(first)
+    second_merged = _merge_intervals(second)
+    first_index = 0
+    second_index = 0
+    overlap_ns = 0
+    while first_index < len(first_merged) and second_index < len(second_merged):
+        first_start, first_end = first_merged[first_index]
+        second_start, second_end = second_merged[second_index]
+        overlap_ns += max(
+            0,
+            min(first_end, second_end) - max(first_start, second_start),
+        )
+        if first_end <= second_end:
+            first_index += 1
+        else:
+            second_index += 1
+    return overlap_ns / 1e6
+
+
 def analyze_traces(
     paths: list[Path],
     *,
@@ -178,6 +218,7 @@ def analyze_traces(
         and _inside_window(int(event["end_unix_ns"]) / 1_000_000_000.0, window)
     ]
     operation_durations: dict[str, list[float]] = defaultdict(list)
+    operation_intervals: dict[str, list[tuple[int, int]]] = defaultdict(list)
     attribute_values: dict[str, list[float]] = defaultdict(list)
     trace_bounds: dict[str, list[tuple[int, int]]] = defaultdict(list)
     resource_batch_ids = {
@@ -191,6 +232,9 @@ def analyze_traces(
     trajectory_trace_ids: set[str] = set()
     status_counts: dict[str, int] = defaultdict(int)
     span_count = 0
+    all_intervals: list[tuple[int, int]] = []
+    model_intervals: list[tuple[int, int]] = []
+    retrieval_intervals: list[tuple[int, int]] = []
 
     for event in events:
         component = str(event.get("component", "unknown"))
@@ -211,9 +255,21 @@ def analyze_traces(
             continue
         span_count += 1
         operation = str(event.get("operation", "unknown"))
-        operation_durations[f"{component}/{operation}"].append(
+        operation_key = f"{component}/{operation}"
+        operation_durations[operation_key].append(
             float(event["duration_ms"])
         )
+        interval = (int(event["start_unix_ns"]), int(event["end_unix_ns"]))
+        operation_intervals[operation_key].append(interval)
+        all_intervals.append(interval)
+        if operation in {"model_generate", "model_generation"}:
+            model_intervals.append(interval)
+        if (
+            operation
+            in {"retrieval", "retrieval_http", "search", "search_tool", "retrieve"}
+            or component in {"resource_server", "search_r1_e5"}
+        ):
+            retrieval_intervals.append(interval)
         if component == "search_r1_agent" and operation == "rollout":
             trajectory_trace_ids.add(str(event.get("trace_id", "")))
         status_counts[str(event.get("status", "unknown"))] += 1
@@ -241,6 +297,32 @@ def analyze_traces(
             / 1_000_000.0
         )
 
+    window_duration_ms = (
+        (window[1] - window[0]) * 1000.0 if window is not None else None
+    )
+    operation_activity = {}
+    for name, intervals in sorted(operation_intervals.items()):
+        wall_union_ms = _interval_duration_ms(intervals)
+        inclusive_sum_ms = sum(operation_durations[name])
+        operation_activity[name] = {
+            "inclusive_span_sum_ms": inclusive_sum_ms,
+            "wall_union_ms": wall_union_ms,
+            "mean_concurrency_when_active": (
+                inclusive_sum_ms / wall_union_ms if wall_union_ms else 0.0
+            ),
+            "measurement_window_coverage_fraction": (
+                wall_union_ms / window_duration_ms
+                if window_duration_ms is not None and window_duration_ms > 0
+                else None
+            ),
+        }
+    model_union_ms = _interval_duration_ms(model_intervals)
+    retrieval_union_ms = _interval_duration_ms(retrieval_intervals)
+    any_union_ms = _interval_duration_ms(all_intervals)
+    model_retrieval_overlap_ms = _interval_intersection_ms(
+        model_intervals, retrieval_intervals
+    )
+
     return {
         "span_count": span_count,
         "trace_count": len(trace_bounds),
@@ -250,6 +332,19 @@ def analyze_traces(
         "operations_ms": {
             name: summarize(values)
             for name, values in sorted(operation_durations.items())
+        },
+        "operation_activity": operation_activity,
+        "timeline_activity": {
+            "model_generation_wall_union_ms": model_union_ms,
+            "retrieval_wall_union_ms": retrieval_union_ms,
+            "model_retrieval_overlap_ms": model_retrieval_overlap_ms,
+            "any_traced_activity_wall_union_ms": any_union_ms,
+            "measurement_window_ms": window_duration_ms,
+            "interpretation": (
+                "Wall unions collapse concurrent trajectory spans. Model and "
+                "retrieval unions can overlap and are inclusive evidence, not "
+                "additive critical-path buckets. Clean traces may be sampled."
+            ),
         },
         "stage_attributes_ms": {
             name: summarize(values) for name, values in sorted(attribute_values.items())

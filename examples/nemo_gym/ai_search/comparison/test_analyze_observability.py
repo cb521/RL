@@ -71,6 +71,62 @@ def test_analyze_traces_links_resource_and_retriever_batches(tmp_path) -> None:
     assert report["provider_batch_links"]["linked_batches"] == 1
     assert report["provider_batch_links"]["retriever_batches"] == 1
     assert report["operations_ms"]["resource_server/search"]["p95"] == 10.0
+    assert report["operation_activity"]["resource_server/search"][
+        "wall_union_ms"
+    ] == 10.0
+    assert report["timeline_activity"]["retrieval_wall_union_ms"] == 10.0
+
+
+def test_analyze_traces_collapses_concurrency_and_measures_overlap(tmp_path) -> None:
+    trace_path = tmp_path / "trace.jsonl"
+    base_ns = 1_000_000_000
+    _write_jsonl(
+        trace_path,
+        [
+            {
+                "event": "span",
+                "trace_id": "trajectory-1",
+                "component": "current_verl",
+                "operation": "model_generation",
+                "status": "ok",
+                "start_unix_ns": base_ns,
+                "end_unix_ns": base_ns + 10_000_000,
+                "duration_ms": 10.0,
+                "attributes": {},
+            },
+            {
+                "event": "span",
+                "trace_id": "trajectory-2",
+                "component": "current_verl",
+                "operation": "model_generation",
+                "status": "ok",
+                "start_unix_ns": base_ns + 5_000_000,
+                "end_unix_ns": base_ns + 15_000_000,
+                "duration_ms": 10.0,
+                "attributes": {},
+            },
+            {
+                "event": "span",
+                "trace_id": "trajectory-1",
+                "component": "current_verl",
+                "operation": "retrieval",
+                "status": "ok",
+                "start_unix_ns": base_ns + 8_000_000,
+                "end_unix_ns": base_ns + 12_000_000,
+                "duration_ms": 4.0,
+                "attributes": {},
+            },
+        ],
+    )
+
+    report = analyze_traces([trace_path], window=(1.0, 1.02))
+
+    model = report["operation_activity"]["current_verl/model_generation"]
+    assert model["inclusive_span_sum_ms"] == 20.0
+    assert model["wall_union_ms"] == 15.0
+    assert model["mean_concurrency_when_active"] == pytest.approx(4 / 3)
+    assert model["measurement_window_coverage_fraction"] == pytest.approx(0.75)
+    assert report["timeline_activity"]["model_retrieval_overlap_ms"] == 4.0
 
 
 def test_analyze_prometheus_calculates_interval_deltas(tmp_path) -> None:

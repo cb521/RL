@@ -250,6 +250,12 @@ whether retrieval is on the critical path or overlapped with other rollouts.
 4. **Trajectory JSONL spans** join model calls, actions, queues, HTTP batches,
    and E5 stages by trajectory and provider batch IDs.
 
+The trajectory analyzer reports both the sum of per-request span durations and
+the wall-clock union of concurrent spans, plus model/retrieval overlap. This
+prevents forty concurrent requests from being misread as forty times the
+critical-path time. These unions are still inclusive, and sampled clean traces
+are not promoted to exact top-level buckets.
+
 Instrumentation overhead is measured by an otherwise identical on/off pair.
 If a framework cannot expose an internal span, the report marks that field
 missing and retains the common external wall-time boundary. Missing evidence is
