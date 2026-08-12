@@ -345,8 +345,8 @@ def test_slime_launcher_freezes_aligned_protocol() -> None:
 
     required_fragments = (
         "expected_slime_base=a74ae3a0ad16bd8b769d5386738e8ae3d1269d7e",
-        "expected_slime_patched_head=510ed5bdd9942bfb71c2b74d1928f6cefde646df",
-        "expected_slime_patch_sha256=cedb27184a058ecca01304b2631856706e1654b396d5133f353b31d32ae5aafb",
+        "expected_slime_patched_head=bdd22cb1f672c416112fe5439745d64a9ec57caf",
+        "expected_slime_patch_sha256=b6ed24e28d770c34c6a736eac80108ed7e982d14077eeed1efbc14876c7dae5f",
         "expected_model_revision=d149729398750b98c0af14eb82c78cfe92750796",
         "expected_train_sha256=64325c44a1ac79c53fc70ad36551e34b4d2ac0fa79cf0d3cca1c4d244bdeaa39",
         "expected_eval_sha256=7c7d10d003dce8b0c6c2c0c4177974d0767cd2a380123faf6ee51473bc8e2461",
@@ -390,7 +390,7 @@ def test_slime_launcher_freezes_aligned_protocol() -> None:
         '"NSYS_NVTX_PROFILER_REGISTER_ONLY":"0"',
         '"capture-range":"nvtx"',
         '"nvtx-capture":"search_r1_outer_step"',
-        '"capture-range-end":"stop"',
+        '"capture-range-end":"none"',
         '"wait":"primary"',
         '"o":"%s/slime_actor_%%p"',
         '"sample":"none"',
@@ -399,14 +399,16 @@ def test_slime_launcher_freezes_aligned_protocol() -> None:
         "nsys_target_nvtx_scope=%s\\n",
         "nsys_collection_end=%s\\n",
         "nsys_post_range_activity=%s\\n",
+        "nsys_actor_finalization=%s\\n",
         "nsys_process_wait=%s\\n",
         "nsys_session_naming=%s\\n",
         "launcher-prefix-and-wrapper-pid",
         "nsys_session_prefix=%s\\n",
         "nsys_report_ready_gate=%s\\n",
         "nsys_report_timeout_seconds=%s\\n",
-        "actor-rank-0-target-step",
-        "target-nvtx-range-end",
+        "actor-rank-0-target-step-through-final-actor-release",
+        "profile-only-final-actor-release",
+        "ray-kill-after-all-rollouts",
         "before-ray-stop",
         "SEARCH_R1_SLIME_NSYS_REPORT_READY",
         "Timed out waiting for the rank-zero Nsight report before Ray shutdown.",
@@ -421,7 +423,7 @@ def test_slime_launcher_freezes_aligned_protocol() -> None:
     assert 'if [[ "${num_gpus}" != "8" ]]' in source
     assert "physical_gpus=%s\\nactor_gpus=%s\\nrollout_gpus=%s" in source
     assert "pkill" not in source
-    assert '"capture-range-end":"none"' not in source
+    assert '"capture-range-end":"stop"' not in source
     assert '"capture-range-end":"repeat' not in source
 
     wrapper = _read(SLIME_NSYS_WRAPPER)
@@ -436,7 +438,7 @@ def test_slime_launcher_freezes_aligned_protocol() -> None:
 def test_slime_profile_patch_is_frozen_and_measurement_only() -> None:
     patch = SLIME_SEARCH_R1_PATCH.read_bytes()
     assert hashlib.sha256(patch).hexdigest() == (
-        "cedb27184a058ecca01304b2631856706e1654b396d5133f353b31d32ae5aafb"
+        "b6ed24e28d770c34c6a736eac80108ed7e982d14077eeed1efbc14876c7dae5f"
     )
     source = patch.decode()
     for fragment in (
@@ -448,6 +450,8 @@ def test_slime_profile_patch_is_frozen_and_measurement_only() -> None:
         "torch.cuda.nvtx.range_pop",
         "self.args.rank != 0",
         "one actor at a time",
+        "actor_model.release()",
+        "capture-range-end=none",
     ):
         assert fragment in source
     assert "torch.cuda.profiler" not in source
@@ -456,7 +460,7 @@ def test_slime_profile_patch_is_frozen_and_measurement_only() -> None:
 def test_slime_checkpoint_conversion_requires_exact_roundtrip() -> None:
     source = _read(SLIME_CHECKPOINT_PREP)
     for fragment in (
-        "expected_slime_patched_head=510ed5bdd9942bfb71c2b74d1928f6cefde646df",
+        "expected_slime_patched_head=bdd22cb1f672c416112fe5439745d64a9ec57caf",
         "slimerl/slime@sha256:f7f8ee9acde9645a6e88f0c703597e69a58d2892abff56071630c88f23d5068f",
         "--ckpt-format torch_dist",
         "convert_torch_dist_to_hf.py",

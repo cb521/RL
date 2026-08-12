@@ -44,7 +44,7 @@ index a8ba6ddc645646fdfe7444b2dc2dc7c1d7ca8be9..8b3ae7d3f0387d8fbeef81a5f82ad037
      def sleep(self, tags):
          raise NotImplementedError
 diff --git a/train.py b/train.py
-index 9cb296886619536b65fb8637b16901aa74f1c76f..afffb3198a78772925b8e892e25ef9f4a7dd3be9 100644
+index 9cb296886619536b65fb8637b16901aa74f1c76f..1e1b54781b513d392e59c2a7d1aa569ad3556fbf 100644
 --- a/train.py
 +++ b/train.py
 @@ -1,3 +1,5 @@
@@ -91,3 +91,15 @@ index 9cb296886619536b65fb8637b16901aa74f1c76f..afffb3198a78772925b8e892e25ef9f4
  
          if args.offload_rollout:
              ray.get(rollout_manager.onload_kv.remote())
+@@ -92,6 +109,11 @@ def train(args):
+ 
+     ray.get(rollout_manager.dispose.remote())
+     finish_tracking(args)
++    if profile_rollout_id is not None:
++        # capture-range-end=none keeps range_pop() out of Nsight's synchronous
++        # stop path. All actor work is complete here, so release the actor
++        # group and let primary-process exit finalize the rank-zero report.
++        actor_model.release()
+ 
+ 
+ if __name__ == "__main__":

@@ -22,7 +22,7 @@ explicit adapters.
 | NeMo RL | This repository | Recorded in each run manifest | Strict text-action reproduction |
 | Original Search-R1 | [PeterGriffinJin/Search-R1](https://github.com/PeterGriffinJin/Search-R1) | Upstream base `598e61bd1d36895726d28a8d06b3a15bed19f5d3`; aligned patch head `8f4c5b91e4092fb4d8e858cee0689d339aaf310f` | Paper's public veRL fork plus a disclosed comparison patch stack |
 | Current veRL | [verl-project/verl](https://github.com/verl-project/verl) | Upstream base `5cfb74fa04c7f6e5d98260b8f05157c6a9402695`; measurement-only patch head `fb72e8b195095ac3334e870176eb6eaa80184001` | Current Agent Loop plus disclosed Search-R1 and measurement adapters |
-| slime | [THUDM/slime](https://github.com/THUDM/slime/tree/main/examples/search-r1) | Upstream base `a74ae3a0ad16bd8b769d5386738e8ae3d1269d7e`; measurement-only patch head `510ed5bdd9942bfb71c2b74d1928f6cefde646df` | Published `Search-R1 lite` example plus disclosed alignment and profiling adapters |
+| slime | [THUDM/slime](https://github.com/THUDM/slime/tree/main/examples/search-r1) | Upstream base `a74ae3a0ad16bd8b769d5386738e8ae3d1269d7e`; measurement-only patch head `bdd22cb1f672c416112fe5439745d64a9ec57caf` | Published `Search-R1 lite` example plus disclosed alignment and profiling adapters |
 
 The current veRL row is not an upstream runnable Search-R1 recipe. Its main
 branch retains `preprocess_search_r1_dataset.py`,
@@ -131,17 +131,20 @@ data order, or fixed step-500 headline result.
   does not change gradients or optimizer work. A separate, frozen
   measurement-only patch brackets one outer step on actor rank zero with an
   NVTX range. The profile launcher enables dynamic-message matching for
-  PyTorch's NVTX marker and starts collection at that range. Plain
-  `capture-range-end=stop` ends collection at the range boundary while the
-  actor continues; unlike `repeat:1:async`, it does not request immediate
-  repeat-mode report materialization from `range_pop()`, which can deadlock
-  the full Ray actor in Nsight/CUPTI. A launcher-side wrapper gives every
-  worker session a unique job/PID-derived name for diagnostics, and the
-  launcher keeps Ray alive until the sole rank-zero report is ready. Other
-  actor ranks and the separate SGLang rollout engines are explicitly recorded
-  as missing; clean and baseline runs never enter that branch. Full debug
-  rollout serialization is campaign-only and is disabled in smoke and timed
-  performance runs.
+  PyTorch's NVTX marker and starts collection at that range. The range end is
+  ignored as a collection-stop trigger because both `stop` and
+  `repeat:1:async` can block the full Ray actor in Nsight/CUPTI while closing
+  the captured step. After every rollout and tracking action is complete, a
+  profile-only patch uses slime's existing actor-group release path; rank-zero
+  process exit then finalizes the report. The named range still identifies the
+  exact target step, while aggregate Nsight tables also contain later
+  rank-zero activity and are labeled accordingly. A launcher-side wrapper
+  gives every worker session a unique job/PID-derived name for diagnostics,
+  and the launcher keeps Ray alive until the sole rank-zero report is ready.
+  Other actor ranks and the separate SGLang rollout engines are explicitly
+  recorded as missing; clean and baseline runs never enter that branch. Full
+  debug rollout serialization is campaign-only and is disabled in smoke and
+  timed performance runs.
 - **NeMo RL:** use `grpo_qwen2_5_7b_search_r1.yaml` with training shuffle
   disabled for the four-way aligned campaign; the paper-reproduction recipe
   may retain its native shuffle setting. Any diagnostic micro-batch override
