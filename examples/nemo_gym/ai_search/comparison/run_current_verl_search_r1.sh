@@ -16,6 +16,7 @@ run_mode="${SEARCH_R1_RUN_MODE:-smoke}"
 observability_mode="${SEARCH_R1_OBSERVABILITY_MODE:-clean}"
 seed="${SEARCH_R1_SEED:-42}"
 num_gpus="${SEARCH_R1_NUM_GPUS:-8}"
+allow_nonformal_preflight="${SEARCH_R1_ALLOW_NONFORMAL_PREFLIGHT:-0}"
 lr_schedule_horizon_outer_steps=500
 lr_warmup_outer_steps=142
 
@@ -149,9 +150,15 @@ if [[ "${retriever_url}" != http://*/retrieve && "${retriever_url}" != https://*
   echo "SEARCH_R1_RETRIEVER_URL must be an HTTP(S) /retrieve endpoint." >&2
   exit 1
 fi
+hardware_contract=eight-gpu
 if [[ "${num_gpus}" != "8" ]]; then
-  echo "Aligned current-veRL runs require exactly eight training GPUs." >&2
-  exit 1
+  if [[ "${run_mode}" != smoke ]] \
+    || [[ "${allow_nonformal_preflight}" != "1" ]] \
+    || [[ "${num_gpus}" != "4" ]]; then
+    echo "Aligned current-veRL runs require eight GPUs; only an explicitly enabled four-GPU smoke preflight is allowed." >&2
+    exit 1
+  fi
+  hardware_contract=nonformal-four-gpu-smoke
 fi
 if [[ "${seed}" == *[!0-9]* || -z "${seed}" ]]; then
   echo "SEARCH_R1_SEED must be a non-negative integer." >&2
@@ -229,6 +236,7 @@ export PYTHONUNBUFFERED=1
   printf 'retriever_url=%s\n' "${retriever_url}"
   printf 'seed=%s\n' "${seed}"
   printf 'training_gpus=%s\n' "${num_gpus}"
+  printf 'hardware_contract=%s\n' "${hardware_contract}"
   printf 'prompts_per_step=%s\n' "${prompts_per_step}"
   printf 'rollouts_per_prompt=5\n'
   printf 'trajectories_per_step=%s\n' "$((prompts_per_step * 5))"

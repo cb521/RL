@@ -16,6 +16,7 @@ run_mode="${SEARCH_R1_RUN_MODE:-smoke}"
 observability_mode="${SEARCH_R1_OBSERVABILITY_MODE:-clean}"
 seed="${SEARCH_R1_SEED:-42}"
 num_gpus="${SEARCH_R1_NUM_GPUS:-8}"
+allow_nonformal_preflight="${SEARCH_R1_ALLOW_NONFORMAL_PREFLIGHT:-0}"
 
 expected_model_revision=d149729398750b98c0af14eb82c78cfe92750796
 expected_train_sha256=9904042da053be8e7fa275453c9221324d24aadb6f67323d040e6016da9bfaff
@@ -109,9 +110,15 @@ if [[ "${retriever_url}" != http://*/retrieve && "${retriever_url}" != https://*
   echo "SEARCH_R1_RETRIEVER_URL must be an HTTP(S) /retrieve endpoint." >&2
   exit 1
 fi
+hardware_contract=eight-gpu
 if [[ "${num_gpus}" != "8" ]]; then
-  echo "Aligned NeMo Search-R1 runs require exactly eight training GPUs." >&2
-  exit 1
+  if [[ "${run_mode}" != smoke ]] \
+    || [[ "${allow_nonformal_preflight}" != "1" ]] \
+    || [[ "${num_gpus}" != "4" ]]; then
+    echo "Aligned NeMo runs require eight GPUs; only an explicitly enabled four-GPU smoke preflight is allowed." >&2
+    exit 1
+  fi
+  hardware_contract=nonformal-four-gpu-smoke
 fi
 if [[ "${seed}" == *[!0-9]* || -z "${seed}" ]]; then
   echo "SEARCH_R1_SEED must be a non-negative integer." >&2
@@ -159,6 +166,7 @@ nemo_commit=$(git -C "${nemo_root}" rev-parse HEAD)
   printf 'model_revision=%s\n' "${expected_model_revision}"
   printf 'train_sha256=%s\neval_sha256=%s\n' "${expected_train_sha256}" "${expected_eval_sha256}"
   printf 'retriever_url=%s\nseed=%s\ntraining_gpus=%s\n' "${retriever_url}" "${seed}" "${num_gpus}"
+  printf 'hardware_contract=%s\n' "${hardware_contract}"
   printf 'prompts_per_step=%s\nrollouts_per_prompt=5\n' "${prompts_per_step}"
   printf 'trajectories_per_step=%s\ntotal_steps=%s\n' "$((prompts_per_step * 5))" "${total_steps}"
   printf 'train_global_batch_size=%s\ntrain_micro_batch_size_per_gpu=%s\n' "${train_global_batch_size}" "${train_micro_batch_size}"

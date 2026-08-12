@@ -101,6 +101,25 @@ def test_campaign_launchers_save_only_midpoint_and_final_checkpoints() -> None:
     assert "save_interval=250" in _read(SLIME_LAUNCHER)
 
 
+def test_four_gpu_preflight_is_explicit_and_never_formal() -> None:
+    for launcher in (
+        NEMO_SEARCH_R1_LAUNCHER,
+        ORIGINAL_SEARCH_R1_LAUNCHER,
+        CURRENT_VERL_LAUNCHER,
+        SLIME_LAUNCHER,
+    ):
+        source = _read(launcher)
+        for fragment in (
+            'allow_nonformal_preflight="${SEARCH_R1_ALLOW_NONFORMAL_PREFLIGHT:-0}"',
+            '[[ "${run_mode}" != smoke ]]',
+            '[[ "${allow_nonformal_preflight}" != "1" ]]',
+            '[[ "${num_gpus}" != "4" ]]',
+            "hardware_contract=nonformal-four-gpu-smoke",
+            "printf 'hardware_contract=%s\\n'",
+        ):
+            assert fragment in source
+
+
 def test_nemo_sync_trainer_prints_classified_response_work() -> None:
     source = _read(GRPO_SYNC)
     for fragment in (

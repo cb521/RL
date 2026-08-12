@@ -17,6 +17,7 @@ run_mode="${SEARCH_R1_RUN_MODE:-smoke}"
 observability_mode="${SEARCH_R1_OBSERVABILITY_MODE:-clean}"
 seed="${SEARCH_R1_SEED:-42}"
 num_gpus="${SEARCH_R1_NUM_GPUS:-8}"
+allow_nonformal_preflight="${SEARCH_R1_ALLOW_NONFORMAL_PREFLIGHT:-0}"
 
 expected_upstream_base=598e61bd1d36895726d28a8d06b3a15bed19f5d3
 expected_patched_head=8f4c5b91e4092fb4d8e858cee0689d339aaf310f
@@ -153,9 +154,15 @@ if [[ "${retriever_url}" != http://*/retrieve && "${retriever_url}" != https://*
   echo "SEARCH_R1_RETRIEVER_URL must be an HTTP(S) /retrieve endpoint." >&2
   exit 1
 fi
+hardware_contract=eight-gpu
 if [[ "${num_gpus}" != "8" ]]; then
-  echo "Aligned original Search-R1 runs require exactly eight training GPUs." >&2
-  exit 1
+  if [[ "${run_mode}" != smoke ]] \
+    || [[ "${allow_nonformal_preflight}" != "1" ]] \
+    || [[ "${num_gpus}" != "4" ]]; then
+    echo "Aligned original Search-R1 runs require eight GPUs; only an explicitly enabled four-GPU smoke preflight is allowed." >&2
+    exit 1
+  fi
+  hardware_contract=nonformal-four-gpu-smoke
 fi
 if [[ "${seed}" == *[!0-9]* || -z "${seed}" ]]; then
   echo "SEARCH_R1_SEED must be a non-negative integer." >&2
@@ -257,6 +264,7 @@ export PYTHONUNBUFFERED=1
   printf 'model_revision=%s\n' "${expected_model_revision}"
   printf 'train_sha256=%s\neval_sha256=%s\n' "${expected_train_sha256}" "${expected_eval_sha256}"
   printf 'retriever_url=%s\nseed=%s\ntraining_gpus=%s\n' "${retriever_url}" "${seed}" "${num_gpus}"
+  printf 'hardware_contract=%s\n' "${hardware_contract}"
   printf 'prompts_per_step=%s\nrollouts_per_prompt=5\n' "${prompts_per_step}"
   printf 'trajectories_per_step=%s\ntotal_steps=%s\n' "$((prompts_per_step * 5))" "${total_steps}"
   printf 'trainer_stop_step=%s\nppo_mini_batch_size=%s\n' "${trainer_stop_step}" "${ppo_mini_batch_size}"

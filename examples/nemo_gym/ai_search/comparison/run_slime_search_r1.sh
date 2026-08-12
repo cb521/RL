@@ -18,6 +18,7 @@ run_mode="${SEARCH_R1_RUN_MODE:-smoke}"
 observability_mode="${SEARCH_R1_OBSERVABILITY_MODE:-clean}"
 seed="${SEARCH_R1_SEED:-42}"
 num_gpus="${SEARCH_R1_NUM_GPUS:-8}"
+allow_nonformal_preflight="${SEARCH_R1_ALLOW_NONFORMAL_PREFLIGHT:-0}"
 
 expected_slime_base=a74ae3a0ad16bd8b769d5386738e8ae3d1269d7e
 expected_slime_patched_head=3c30f8b4954e40f7baa0073d83a62134c1aec82b
@@ -146,9 +147,15 @@ if [[ "${retriever_url}" != http://*/retrieve && "${retriever_url}" != https://*
   echo "SEARCH_R1_RETRIEVER_URL must be an HTTP(S) /retrieve endpoint." >&2
   exit 1
 fi
+hardware_contract=eight-gpu
 if [[ "${num_gpus}" != "8" ]]; then
-  echo "Aligned slime runs require exactly eight colocated physical GPUs." >&2
-  exit 1
+  if [[ "${run_mode}" != smoke ]] \
+    || [[ "${allow_nonformal_preflight}" != "1" ]] \
+    || [[ "${num_gpus}" != "4" ]]; then
+    echo "Aligned slime runs require eight GPUs; only an explicitly enabled four-GPU smoke preflight is allowed." >&2
+    exit 1
+  fi
+  hardware_contract=nonformal-four-gpu-smoke
 fi
 if [[ "${seed}" == *[!0-9]* || -z "${seed}" ]]; then
   echo "SEARCH_R1_SEED must be a non-negative integer." >&2
@@ -224,6 +231,7 @@ export PYTHONUNBUFFERED=1
   printf 'seed=%s\n' "${seed}"
   printf 'physical_gpus=%s\nactor_gpus=%s\nrollout_gpus=%s\ncolocated=true\n' \
     "${num_gpus}" "${num_gpus}" "${num_gpus}"
+  printf 'hardware_contract=%s\n' "${hardware_contract}"
   printf 'prompts_per_rollout=%s\n' "${prompts_per_step}"
   printf 'rollouts_per_prompt=5\n'
   printf 'trajectories_per_rollout=%s\n' "$((prompts_per_step * 5))"
