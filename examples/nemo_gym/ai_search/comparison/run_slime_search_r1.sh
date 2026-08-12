@@ -228,7 +228,7 @@ if [[ "${observability_mode}" == profile ]]; then
     exit 1
   fi
   mkdir -p "${NSYS_TMPDIR}"
-  export SEARCH_R1_NSYS_PROFILE_ROLLOUT_ID=1
+  export SEARCH_R1_NSYS_PROFILE_ROLLOUT_ID=3
   nsys_report_timeout_seconds="${SEARCH_R1_SLIME_NSYS_REPORT_TIMEOUT_SECONDS:-300}"
   if [[ "${nsys_report_timeout_seconds}" == *[!0-9]* ]] \
     || (( nsys_report_timeout_seconds < 1 )); then
@@ -277,9 +277,10 @@ export PYTHONUNBUFFERED=1
   printf 'tensorboard_dir=%s\n' "${TENSORBOARD_DIR:-disabled}"
   printf 'swanlab_source=%s\n' "$([[ "${enable_tensorboard}" == 1 ]] && echo post-run-tensorboard-conversion || echo disabled)"
   printf 'nsys_executable=%s\nnsys_version=%s\n' "${nsys_executable}" "${nsys_version}"
-  printf 'nsys_profile_rollout_id=%s\nnsys_scope=%s\n' "${SEARCH_R1_NSYS_PROFILE_ROLLOUT_ID:-disabled}" "$([[ "${observability_mode}" == profile ]] && echo actor-rank-0-target-step-through-graceful-rank-zero-exit || echo disabled)"
+  printf 'nsys_profile_rollout_id=%s\nnsys_scope=%s\n' "${SEARCH_R1_NSYS_PROFILE_ROLLOUT_ID:-disabled}" "$([[ "${observability_mode}" == profile ]] && echo actor-rank-0-final-measured-step-through-graceful-rank-zero-exit || echo disabled)"
   printf 'nsys_actor_rank_scope=%s\n' "$([[ "${observability_mode}" == profile ]] && echo rank-0-only || echo disabled)"
-  printf 'nsys_target_nvtx_scope=%s\n' "$([[ "${observability_mode}" == profile ]] && echo actor-rank-0-full-outer-step || echo disabled)"
+  printf 'nsys_target_nvtx_scope=%s\n' "$([[ "${observability_mode}" == profile ]] && echo actor-rank-0-final-measured-full-outer-step || echo disabled)"
+  printf 'nsys_trace=%s\n' "$([[ "${observability_mode}" == profile ]] && echo cuda,nvtx || echo disabled)"
   printf 'nsys_collection_end=%s\n' "$([[ "${observability_mode}" == profile ]] && echo profile-only-graceful-rank-zero-exit || echo disabled)"
   printf 'nsys_post_range_activity=%s\n' "$([[ "${observability_mode}" == profile ]] && echo present || echo disabled)"
   printf 'nsys_actor_finalization=%s\n' "$([[ "${observability_mode}" == profile ]] && echo ray-graceful-rank-zero-then-release-peers || echo disabled)"
@@ -412,7 +413,9 @@ ray start \
 trap 'ray stop --force >/dev/null 2>&1 || true' EXIT INT TERM
 
 if [[ "${observability_mode}" == profile ]]; then
-  # Actor rank zero brackets the target outer step with a named NVTX range.
+  # Actor rank zero brackets the final measured outer step with a named NVTX
+  # range. Restrict the trace to CUDA and NVTX so this diagnostic captures one
+  # bounded step instead of retaining a large multi-step CUPTI payload.
   # Ignore the range end as a collection-stop trigger so range_pop() cannot
   # enter Nsight's synchronous stop path. After all rollouts, the frozen
   # measurement-only patch gracefully terminates rank zero, waits for Ray's
@@ -420,7 +423,7 @@ if [[ "${observability_mode}" == profile ]]; then
   # process exit finalizes the report while the named range preserves the
   # target boundary.
   runtime_env_json=$(printf \
-    '{"env_vars":{"PYTHONPATH":"%s","PATH":"%s:%s","SEARCH_R1_REAL_NSYS_BIN":"%s","SEARCH_R1_SLIME_NSYS_SESSION_PREFIX":"%s","NSYS_TMPDIR":"%s","CUDA_DEVICE_MAX_CONNECTIONS":"1","SEARCH_R1_RETRIEVER_URL":"%s","SEARCH_R1_EVAL_FILE":"%s","SEARCH_R1_COMMON_EVAL_DIR":"%s","TENSORBOARD_DIR":"%s","AI_SEARCH_TRACE_PATH":"%s","AI_SEARCH_TRACE_SAMPLE_RATE":"%s","SEARCH_R1_NSYS_PROFILE_ROLLOUT_ID":"1","NSYS_NVTX_PROFILER_REGISTER_ONLY":"0"},"nsight":{"trace":"cuda,nvtx,cublas,nccl,osrt","cuda-memory-usage":"true","sample":"none","cpuctxsw":"none","capture-range":"nvtx","nvtx-capture":"search_r1_outer_step","capture-range-end":"none","wait":"primary","kill":"none","o":"%s/slime_actor_%%p"}}' \
+    '{"env_vars":{"PYTHONPATH":"%s","PATH":"%s:%s","SEARCH_R1_REAL_NSYS_BIN":"%s","SEARCH_R1_SLIME_NSYS_SESSION_PREFIX":"%s","NSYS_TMPDIR":"%s","CUDA_DEVICE_MAX_CONNECTIONS":"1","SEARCH_R1_RETRIEVER_URL":"%s","SEARCH_R1_EVAL_FILE":"%s","SEARCH_R1_COMMON_EVAL_DIR":"%s","TENSORBOARD_DIR":"%s","AI_SEARCH_TRACE_PATH":"%s","AI_SEARCH_TRACE_SAMPLE_RATE":"%s","SEARCH_R1_NSYS_PROFILE_ROLLOUT_ID":"3","NSYS_NVTX_PROFILER_REGISTER_ONLY":"0"},"nsight":{"trace":"cuda,nvtx","sample":"none","cpuctxsw":"none","capture-range":"nvtx","nvtx-capture":"search_r1_outer_step","capture-range-end":"none","wait":"primary","kill":"none","o":"%s/slime_actor_%%p"}}' \
     "${PYTHONPATH}" \
     "${nsys_wrapper_dir}" \
     "${PATH}" \

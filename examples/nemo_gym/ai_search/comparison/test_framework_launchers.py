@@ -385,12 +385,13 @@ def test_slime_launcher_freezes_aligned_protocol() -> None:
         "SEARCH_R1_OUTPUT_DIR already contains a run manifest",
         "The strict slime launcher does not accept positional overrides.",
         'observability_mode="${SEARCH_R1_OBSERVABILITY_MODE:-clean}"',
-        "SEARCH_R1_NSYS_PROFILE_ROLLOUT_ID=1",
+        "SEARCH_R1_NSYS_PROFILE_ROLLOUT_ID=3",
         'export NSYS_NVTX_PROFILER_REGISTER_ONLY=0',
         '"NSYS_NVTX_PROFILER_REGISTER_ONLY":"0"',
         '"capture-range":"nvtx"',
         '"nvtx-capture":"search_r1_outer_step"',
         '"capture-range-end":"none"',
+        '"trace":"cuda,nvtx"',
         '"wait":"primary"',
         '"o":"%s/slime_actor_%%p"',
         '"sample":"none"',
@@ -406,7 +407,9 @@ def test_slime_launcher_freezes_aligned_protocol() -> None:
         "nsys_session_prefix=%s\\n",
         "nsys_report_ready_gate=%s\\n",
         "nsys_report_timeout_seconds=%s\\n",
-        "actor-rank-0-target-step-through-graceful-rank-zero-exit",
+        "actor-rank-0-final-measured-step-through-graceful-rank-zero-exit",
+        "actor-rank-0-final-measured-full-outer-step",
+        "nsys_trace=%s\\n",
         "profile-only-graceful-rank-zero-exit",
         "ray-graceful-rank-zero-then-release-peers",
         "before-ray-stop",
@@ -425,6 +428,8 @@ def test_slime_launcher_freezes_aligned_protocol() -> None:
     assert "pkill" not in source
     assert '"capture-range-end":"stop"' not in source
     assert '"capture-range-end":"repeat' not in source
+    assert '"cuda-memory-usage"' not in source
+    assert '"trace":"cuda,nvtx,cublas,nccl,osrt"' not in source
 
     wrapper = _read(SLIME_NSYS_WRAPPER)
     for fragment in (

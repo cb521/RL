@@ -129,23 +129,27 @@ data order, or fixed step-500 headline result.
   before-train-step hook to hold LR constant across the ten optimizer
   mini-batches in one outer step, matching the other three schedulers; the hook
   does not change gradients or optimizer work. A separate, frozen
-  measurement-only patch brackets one outer step on actor rank zero with an
-  NVTX range. The profile launcher enables dynamic-message matching for
-  PyTorch's NVTX marker and starts collection at that range. The range end is
-  ignored as a collection-stop trigger because both `stop` and
+  measurement-only patch brackets the last of the three measured outer steps
+  on actor rank zero with an NVTX range. The profile launcher enables
+  dynamic-message matching for PyTorch's NVTX marker and starts a bounded
+  `cuda,nvtx` collection at that range. Restricting the trace to those two
+  categories avoids retaining the large multi-step CUPTI payload that failed
+  to finalize in the full Ray actor. The range end is ignored as a
+  collection-stop trigger because both `stop` and
   `repeat:1:async` can block the full Ray actor in Nsight/CUPTI while closing
   the captured step. After every rollout and tracking action is complete, a
   profile-only patch queues Ray's graceful termination task for rank zero and
   waits for the expected intentional actor-exit result before releasing the
   idle peer actors. This preserves CUDA/CUPTI process-exit cleanup so the
-  report can finalize. The named range still identifies the exact target step,
-  while aggregate Nsight tables also contain later rank-zero activity and are
-  labeled accordingly. A launcher-side wrapper gives every worker session a
-  unique job/PID-derived name for diagnostics, and the launcher keeps Ray
-  alive until the sole rank-zero report is ready. Other actor ranks and the
-  separate SGLang rollout engines are explicitly recorded as missing; clean
-  and baseline runs never enter that branch. Full debug rollout serialization
-  is campaign-only and is disabled in smoke and timed performance runs.
+  report can finalize. The named range identifies the exact final measured
+  step; aggregate Nsight tables may also contain the short rank-zero cleanup
+  interval after that range and are labeled accordingly. A launcher-side
+  wrapper gives every worker session a unique job/PID-derived name for
+  diagnostics, and the launcher keeps Ray alive until the sole rank-zero
+  report is ready. Other actor ranks and the separate SGLang rollout engines
+  are explicitly recorded as missing; clean and baseline runs never enter
+  that branch. Full debug rollout serialization is campaign-only and is
+  disabled in smoke and timed performance runs.
 - **NeMo RL:** use `grpo_qwen2_5_7b_search_r1.yaml` with training shuffle
   disabled for the four-way aligned campaign; the paper-reproduction recipe
   may retain its native shuffle setting. Any diagnostic micro-batch override
