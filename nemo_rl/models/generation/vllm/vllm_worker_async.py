@@ -1352,6 +1352,18 @@ class VllmAsyncGenerationWorkerImpl(
 
         return cast(list[str], list_of_worker_results)
 
+    async def start_gpu_profiling_async(self) -> None:
+        """Start GPU profiling through the async vLLM engine."""
+        torch.cuda.profiler.start()
+        if self.llm is not None:
+            await self.llm.collective_rpc("start_gpu_profiling", args=tuple())
+
+    async def stop_gpu_profiling_async(self) -> None:
+        """Stop GPU profiling through the async vLLM engine."""
+        torch.cuda.profiler.stop()
+        if self.llm is not None:
+            await self.llm.collective_rpc("stop_gpu_profiling", args=tuple())
+
     async def prepare_refit_info_async(self, state_dict_info: dict[str, Any]) -> None:
         """Async version of prepare_refit_info."""
         await self.llm.collective_rpc("prepare_refit_info", args=(state_dict_info,))

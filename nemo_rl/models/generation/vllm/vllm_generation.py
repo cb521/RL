@@ -1049,12 +1049,22 @@ class VllmGeneration(GenerationInterface):
 
     def start_gpu_profiling(self) -> None:
         """Start GPU profiling."""
-        futures = self.worker_group.run_all_workers_single_data("start_gpu_profiling")
+        method_name = (
+            "start_gpu_profiling_async"
+            if self.cfg["vllm_cfg"]["async_engine"]
+            else "start_gpu_profiling"
+        )
+        futures = self.worker_group.run_all_workers_single_data(method_name)
         ray.get(futures)
 
     def stop_gpu_profiling(self) -> None:
         """Stop GPU profiling."""
-        futures = self.worker_group.run_all_workers_single_data("stop_gpu_profiling")
+        method_name = (
+            "stop_gpu_profiling_async"
+            if self.cfg["vllm_cfg"]["async_engine"]
+            else "stop_gpu_profiling"
+        )
+        futures = self.worker_group.run_all_workers_single_data(method_name)
         ray.get(futures)
 
     def get_vllm_logger_metrics(self) -> dict[str, Any]:

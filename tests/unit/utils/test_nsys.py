@@ -339,6 +339,11 @@ class TestMaybeGpuProfileStep:
         assert getattr(policy, "__NRL_PROFILE_STARTED") is False
         policy.stop_gpu_profiling.assert_called_once()
 
+        # A normal range stop makes the exit fallback a no-op.
+        registered_function = mock_atexit_register.call_args[0][0]
+        registered_function()
+        policy.stop_gpu_profiling.assert_called_once()
+
     @patch("nemo_rl.utils.nsys.atexit.register")
     def test_profiling_sequence_full_lifecycle(self, mock_atexit_register):
         """Test a complete profiling lifecycle from start to stop."""
