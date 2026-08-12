@@ -13,6 +13,32 @@ from pathlib import Path
 from typing import Any, Callable
 
 
+_WORK_FIELDS = (
+    "completed_trajectories",
+    "requested_trajectories",
+    "generated_tokens",
+    "observation_tokens",
+    "response_tokens",
+    "processed_tokens",
+    "search_count",
+    "search_errors",
+    "invalid_actions",
+    "trajectory_wall_seconds_mean",
+    "trajectory_wall_seconds_max",
+)
+_FIXED_WORK_FIELDS = (
+    "completed_trajectories",
+    "requested_trajectories",
+    "generated_tokens",
+    "observation_tokens",
+    "response_tokens",
+    "processed_tokens",
+    "search_count",
+    "search_errors",
+    "invalid_actions",
+)
+
+
 def _summarize(values: list[float]) -> dict[str, float | int]:
     if not values:
         return {"count": 0, "mean": 0.0, "median": 0.0, "stdev": 0.0}
@@ -108,9 +134,20 @@ def compare_reports(baseline: dict[str, Any], clean: dict[str, Any]) -> dict[str
             f"Measured step IDs differ: baseline={baseline_ids}, clean={clean_ids}"
         )
 
-    work_fields = ("completed_trajectories", "requested_trajectories")
+    baseline_work_fields = {
+        name for name in _WORK_FIELDS if any(name in step for step in baseline_steps)
+    }
+    clean_work_fields = {
+        name for name in _WORK_FIELDS if any(name in step for step in clean_steps)
+    }
+    if baseline_work_fields != clean_work_fields:
+        raise ValueError(
+            "Work metric sets differ: "
+            f"baseline={sorted(baseline_work_fields)}, "
+            f"clean={sorted(clean_work_fields)}"
+        )
     work = {}
-    for name in work_fields:
+    for name in sorted(baseline_work_fields):
         if not all(name in step for step in [*baseline_steps, *clean_steps]):
             raise ValueError(f"Missing required work field {name!r}")
         work[name] = _paired_summary(
@@ -124,12 +161,27 @@ def compare_reports(baseline: dict[str, Any], clean: dict[str, Any]) -> dict[str
         == clean_step["requested_trajectories"]
         for baseline_step, clean_step in zip(baseline_steps, clean_steps)
     )
+    fixed_work_match = {
+        name: all(
+            math.isclose(
+                float(baseline_step[name]),
+                float(clean_step[name]),
+                rel_tol=1e-9,
+                abs_tol=1e-6,
+            )
+            for baseline_step, clean_step in zip(baseline_steps, clean_steps)
+        )
+        for name in _FIXED_WORK_FIELDS
+        if name in baseline_work_fields
+    }
     report = {
         "schema_version": 1,
         "framework": baseline_framework,
         "measured_step_ids": baseline_ids,
         "validity": {
             "completed_trajectory_counts_match": completed_match,
+            "fixed_work_matches": fixed_work_match,
+            "all_reported_fixed_work_matches": all(fixed_work_match.values()),
             "paired_step_count": len(baseline_ids),
         },
         "timing_seconds": _compare_group(baseline_steps, clean_steps, "timing_seconds"),

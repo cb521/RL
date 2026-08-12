@@ -195,7 +195,7 @@ Collecting rollouts: 100%|██████████| 40/40 [00:10<00:00, 4.
   • Total step time: 10.00s
   • generation: 4.00s (40.0%)
 🔍 Performance Metrics:
-    - E2E (Tokens/sec/gpu): 20.00
+    - E2E (Tokens/sec/gpu): 250.00
 ========================= Step 2/2 =========================
 Collecting rollouts: 100%|██████████| 40/40 [00:08<00:00, 5.00it/s]
 📊 Training Results:
@@ -205,7 +205,7 @@ Collecting rollouts: 100%|██████████| 40/40 [00:08<00:00, 5.
   • Total step time: 8.00s
   • generation: 3.00s (37.5%)
 🔍 Performance Metrics:
-    - E2E (Tokens/sec/gpu): 25.00
+    - E2E (Tokens/sec/gpu): 200.00
 """,
         encoding="utf-8",
     )
@@ -214,10 +214,18 @@ Collecting rollouts: 100%|██████████| 40/40 [00:08<00:00, 5.
     assert report["step_count"] == 2
     assert report["steady_step_count"] == 1
     assert report["timing_seconds"]["total_step_time"]["mean"] == 8.0
-    assert report["throughput"]["E2E (Tokens/sec/gpu)"]["mean"] == 25.0
+    assert report["native_throughput"]["E2E (Tokens/sec/gpu)"]["mean"] == 200.0
+    assert report["throughput"]["E2E Model-generated (Tokens/sec)"][
+        "mean"
+    ] == 1250.0
+    assert report["throughput"]["E2E Processed-sequence (Tokens/sec)"][
+        "mean"
+    ] == 1600.0
     assert report["results"]["avg_reward"]["mean"] == 0.2
     assert report["results"]["mean_generation_length"]["mean"] == 250.0
     assert report["work"]["completed_trajectories"]["mean"] == 40.0
+    assert report["work"]["generated_tokens"]["mean"] == 10_000.0
+    assert report["work"]["processed_tokens"]["mean"] == 12_800.0
     assert report["steps"][1]["requested_trajectories"] == 40
 
 
@@ -230,13 +238,15 @@ def test_parse_original_verl_console_normalizes_step_metrics(tmp_path) -> None:
                 "- timing_s/gen:4 - timing_s/policy_logprob:1 - timing_s/ref:1 "
                 "- timing_s/adv:0.5 - timing_s/reward:0.2 "
                 "- timing_s/advantage:0.1 - timing_s/update_actor:3 "
-                "- timing_s/step:10 - perf/total_num_tokens:8000 "
+                "- timing_s/step:10 - state_tokens/total:4000 "
+                "- env/search_calls:20 - perf/total_num_tokens:8000 "
                 "- perf/throughput:100",
                 "step:2 - critic/rewards/mean:0.2 - response_length/mean:120 "
                 "- timing_s/gen:3 - timing_s/policy_logprob:1 - timing_s/ref:1 "
                 "- timing_s/adv:0.4 - timing_s/reward:0.2 "
                 "- timing_s/advantage:0.1 - timing_s/update_actor:2 "
-                "- timing_s/step:8 - perf/total_num_tokens:8000 "
+                "- timing_s/step:8 - state_tokens/total:4400 "
+                "- env/search_calls:22 - perf/total_num_tokens:8000 "
                 "- perf/throughput:125",
             )
         ),
@@ -254,7 +264,18 @@ def test_parse_original_verl_console_normalizes_step_metrics(tmp_path) -> None:
     assert report["timing_seconds"]["generation_and_agent"]["mean"] == 3.0
     assert report["timing_seconds"]["postprocessing_reward_advantage"]["mean"] == 0.4
     assert report["throughput"]["E2E (Samples/sec)"]["mean"] == 5.0
-    assert report["throughput"]["E2E (Tokens/sec)"]["mean"] == 1000.0
+    assert report["throughput"]["E2E Processed-sequence (Tokens/sec)"][
+        "mean"
+    ] == 1000.0
+    assert report["throughput"]["E2E Model-generated (Tokens/sec)"][
+        "mean"
+    ] == 550.0
+    assert report["native_throughput"]["perf/throughput"]["mean"] == 125.0
+    assert report["work"]["generated_tokens"]["mean"] == 4400.0
+    assert report["work"]["observation_tokens"]["mean"] == 400.0
+    assert report["work"]["search_count"]["mean"] == 22.0
+    assert report["results"]["mean_response_sequence_length"]["mean"] == 120.0
+    assert report["results"]["mean_generation_length"]["mean"] == 110.0
     assert report["results"]["avg_reward"]["mean"] == 0.2
 
 
@@ -263,10 +284,14 @@ def test_parse_current_verl_console_maps_advantage_without_double_counting(
 ) -> None:
     console = tmp_path / "current.log"
     console.write_text(
-        "step:1 - timing_s/gen:4 - timing_s/reward:0.2 "
+        "step:1 - response_length/mean:110 - timing_s/gen:4 - timing_s/reward:0.2 "
         "- timing_s/old_log_prob:1 - timing_s/ref:1 - timing_s/adv:0.3 "
         "- timing_s/update_actor:2 - timing_s/step:9 - perf/total_num_tokens:7200 "
-        "- perf/throughput:100\n",
+        "- perf/throughput:100 - work/generated_tokens:3600 "
+        "- work/observation_tokens:800 - work/search_count:18 "
+        "- work/search_errors:0 - work/invalid_actions:1 "
+        "- work/trajectory_wall_seconds_mean:2.5 "
+        "- work/trajectory_wall_seconds_max:4.0\n",
         encoding="utf-8",
     )
 
@@ -279,6 +304,12 @@ def test_parse_current_verl_console_maps_advantage_without_double_counting(
     assert report["timing_seconds"]["advantage_calculation"]["mean"] == 0.3
     assert "postprocessing_reward_advantage" not in report["timing_seconds"]
     assert report["timing_seconds"]["policy_logprobs"]["mean"] == 1.0
+    assert report["work"]["generated_tokens"]["mean"] == 3600.0
+    assert report["work"]["observation_tokens"]["mean"] == 800.0
+    assert report["work"]["invalid_actions"]["mean"] == 1.0
+    assert report["throughput"]["E2E Model-generated (Tokens/sec)"][
+        "mean"
+    ] == 400.0
 
 
 def test_parse_slime_console_requires_rollout_and_update_evidence(tmp_path) -> None:
@@ -287,13 +318,15 @@ def test_parse_slime_console_requires_rollout_and_update_evidence(tmp_path) -> N
         "\n".join(
             (
                 "perf 0: {'rollout/response_len/mean': 100, "
-                "'perf/rollout_time': 4, 'perf/tokens_per_gpu_per_sec': 20}",
+                "'perf/rollout_time': 4, 'perf/tokens_per_gpu_per_sec': 150, "
+                "'perf/effective_tokens_per_gpu_per_sec': 125}",
                 "perf 0: {'perf/train_wait_time': 5, 'perf/train_time': 5, "
                 "'perf/step_time': 10, 'perf/log_probs_time': 1, "
                 "'perf/ref_log_probs_time': 1, 'perf/actor_train_time': 2, "
                 "'perf/actor_train_tok_per_s': 30}",
                 "perf 1: {'rollout/response_len/mean': 120, "
-                "'perf/rollout_time': 3, 'perf/tokens_per_gpu_per_sec': 25}",
+                "'perf/rollout_time': 3, 'perf/tokens_per_gpu_per_sec': 225, "
+                "'perf/effective_tokens_per_gpu_per_sec': 200}",
                 "perf 1: {'perf/train_wait_time': 4, 'perf/train_time': 4, "
                 "'perf/step_time': 8, 'perf/log_probs_time': 0.8, "
                 "'perf/ref_log_probs_time': 0.9, 'perf/actor_train_time': 1.8, "
@@ -315,6 +348,15 @@ def test_parse_slime_console_requires_rollout_and_update_evidence(tmp_path) -> N
     assert report["timing_seconds"]["total_step_time"]["mean"] == 8.0
     assert report["timing_seconds"]["generation_and_agent"]["mean"] == 3.0
     assert report["throughput"]["E2E (Samples/sec)"]["mean"] == 5.0
+    assert report["throughput"]["E2E Model-generated (Tokens/sec)"][
+        "mean"
+    ] == 600.0
+    assert report["work"]["generated_tokens"]["mean"] == 4800.0
+    assert report["work"]["response_tokens"]["mean"] == 5400.0
+    assert report["work"]["observation_tokens"]["mean"] == 600.0
+    assert report["native_throughput"][
+        "perf/effective_tokens_per_gpu_per_sec"
+    ]["mean"] == 200.0
     assert report["results"]["mean_generation_length"]["mean"] == 120.0
 
 

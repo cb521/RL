@@ -61,6 +61,58 @@ _SLIME_TIMING_NAMES = {
     "update_weights_time": "policy_to_engine_synchronization",
 }
 
+_WORK_NAMES = (
+    "completed_trajectories",
+    "requested_trajectories",
+    "generated_tokens",
+    "observation_tokens",
+    "response_tokens",
+    "processed_tokens",
+    "search_count",
+    "search_errors",
+    "invalid_actions",
+    "trajectory_wall_seconds_mean",
+    "trajectory_wall_seconds_max",
+)
+
+
+def _add_canonical_throughput(
+    step: dict[str, Any], *, training_gpus: int
+) -> None:
+    """Compute rates only from explicitly classified work counters."""
+    total_seconds = step["timing_seconds"].get("total_step_time")
+    if not isinstance(total_seconds, (int, float)) or total_seconds <= 0:
+        return
+    throughput = step["throughput"]
+    completed = step.get("completed_trajectories")
+    if isinstance(completed, (int, float)):
+        throughput["E2E (Samples/sec)"] = completed / total_seconds
+    token_rates = {
+        "generated_tokens": "E2E Model-generated (Tokens/sec)",
+        "response_tokens": "E2E Response-sequence (Tokens/sec)",
+        "processed_tokens": "E2E Processed-sequence (Tokens/sec)",
+    }
+    for work_name, rate_name in token_rates.items():
+        value = step.get(work_name)
+        if not isinstance(value, (int, float)):
+            continue
+        rate = value / total_seconds
+        throughput[rate_name] = rate
+        throughput[f"{rate_name[:-1]}/gpu)"] = rate / training_gpus
+
+    generated = step.get("generated_tokens")
+    generation_seconds = step["timing_seconds"].get("generation_and_agent")
+    if generation_seconds is None:
+        generation_seconds = step["timing_seconds"].get("generation")
+    if (
+        isinstance(generated, (int, float))
+        and isinstance(generation_seconds, (int, float))
+        and generation_seconds > 0
+    ):
+        throughput["Generation+agent Model-generated (Tokens/sec)"] = (
+            generated / generation_seconds
+        )
+
 
 def _percentile(values: list[float], percentile: float) -> float:
     if not values:
@@ -578,7 +630,9 @@ def analyze_host_samples(
     }
 
 
-def parse_training_console(path: Path, warmup_steps: int) -> dict[str, Any]:
+def parse_training_console(
+    path: Path, warmup_steps: int, *, training_gpus: int = 8
+) -> dict[str, Any]:
     steps: list[dict[str, Any]] = []
     current: dict[str, Any] | None = None
     in_performance_metrics = False
@@ -595,7 +649,9 @@ def parse_training_console(path: Path, warmup_steps: int) -> dict[str, Any]:
                     "max_steps": int(step_match.group(2)),
                     "timing_seconds": {},
                     "throughput": {},
+                    "native_throughput": {},
                     "results": {},
+                    "work_sources": {},
                 }
                 in_performance_metrics = False
                 continue
@@ -618,7 +674,9 @@ def parse_training_console(path: Path, warmup_steps: int) -> dict[str, Any]:
                 throughput_match = _THROUGHPUT_PATTERN.match(line)
                 if throughput_match:
                     name = throughput_match.group(1).strip()
-                    current["throughput"][name] = float(throughput_match.group(2))
+                    current["native_throughput"][name] = float(
+                        throughput_match.group(2)
+                    )
                     continue
             result_match = _RESULT_PATTERN.match(line)
             if result_match:
@@ -627,7 +685,59 @@ def parse_training_console(path: Path, warmup_steps: int) -> dict[str, Any]:
 
     if current is not None:
         steps.append(current)
-    return _summarize_training_steps(steps, warmup_steps=warmup_steps)
+    for step in steps:
+        completed = step.get("completed_trajectories")
+        mean_generated = step["results"].get("mean_generation_length")
+        if isinstance(completed, (int, float)) and isinstance(
+            mean_generated, (int, float)
+        ):
+            step["generated_tokens"] = mean_generated * completed
+            step["work_sources"]["generated_tokens"] = (
+                "Mean Generation Length x completed trajectories"
+            )
+
+        mean_total = step["results"].get("mean_total_tokens_per_sample")
+        if isinstance(completed, (int, float)) and isinstance(
+            mean_total, (int, float)
+        ):
+            step["processed_tokens"] = mean_total * completed
+            step["work_sources"]["processed_tokens"] = (
+                "Mean Total Tokens per Sample x completed trajectories"
+            )
+        else:
+            total_seconds = step["timing_seconds"].get("total_step_time")
+            aggregate_rate = step["native_throughput"].get("E2E (Tokens/sec)")
+            per_gpu_rate = step["native_throughput"].get(
+                "E2E (Tokens/sec/gpu)"
+            )
+            if isinstance(total_seconds, (int, float)) and total_seconds > 0:
+                if isinstance(aggregate_rate, (int, float)):
+                    step["processed_tokens"] = aggregate_rate * total_seconds
+                    step["work_sources"]["processed_tokens"] = (
+                        "rounded native E2E token rate x rounded step time"
+                    )
+                elif isinstance(per_gpu_rate, (int, float)):
+                    step["processed_tokens"] = (
+                        per_gpu_rate * training_gpus * total_seconds
+                    )
+                    step["work_sources"]["processed_tokens"] = (
+                        "rounded native per-GPU E2E token rate x GPU count x "
+                        "rounded step time"
+                    )
+        _add_canonical_throughput(step, training_gpus=training_gpus)
+    report = _summarize_training_steps(steps, warmup_steps=warmup_steps)
+    report["token_semantics"] = {
+        "generated_tokens": "model-emitted tokens; exact up to printed mean precision",
+        "processed_tokens": (
+            "unpadded training-sequence tokens used by NeMo's native throughput"
+        ),
+        "observation_tokens": "missing from the standard NeMo console",
+        "native_throughput": (
+            "verbatim framework labels retained separately and never compared as "
+            "model-generated throughput"
+        ),
+    }
+    return report
 
 
 def _summarize_training_steps(
@@ -641,7 +751,18 @@ def _summarize_training_steps(
         {name for step in steady_steps for name in step["throughput"]}
     )
     result_names = sorted({name for step in steady_steps for name in step["results"]})
-    work_names = ("completed_trajectories", "requested_trajectories")
+    work_names = tuple(
+        name
+        for name in _WORK_NAMES
+        if any(name in step for step in steady_steps)
+    )
+    native_throughput_names = sorted(
+        {
+            name
+            for step in steady_steps
+            for name in step.get("native_throughput", {})
+        }
+    )
     return {
         "step_count": len(steps),
         "warmup_steps_excluded": warmup_steps,
@@ -661,6 +782,14 @@ def _summarize_training_steps(
                 if name in step["throughput"]
             )
             for name in throughput_names
+        },
+        "native_throughput": {
+            name: summarize(
+                step["native_throughput"][name]
+                for step in steady_steps
+                if name in step.get("native_throughput", {})
+            )
+            for name in native_throughput_names
         },
         "results": {
             name: summarize(
@@ -719,6 +848,7 @@ def parse_verl_training_console(
     framework: str,
     warmup_steps: int,
     trajectories_per_step: int,
+    training_gpus: int = 8,
 ) -> dict[str, Any]:
     """Parse original or current veRL's console logger into the common schema."""
     steps_by_id: dict[int, dict[str, Any]] = {}
@@ -742,28 +872,123 @@ def parse_verl_training_console(
                     normalized_name = "advantage_calculation"
                 timing_seconds[normalized_name] = value
             total_seconds = timing_seconds["total_step_time"]
-            throughput = {
-                "E2E (Samples/sec)": (
-                    trajectories_per_step / total_seconds if total_seconds else 0.0
+            throughput: dict[str, float] = {}
+            native_throughput: dict[str, float] = {}
+            results = _standard_results(metrics)
+            mean_response_length = results.pop("mean_generation_length", None)
+            if mean_response_length is not None:
+                results["mean_response_sequence_length"] = mean_response_length
+            work_sources: dict[str, str] = {}
+            work: dict[str, float] = {}
+
+            if framework == "original" and "state_tokens/total" in metrics:
+                work["generated_tokens"] = metrics["state_tokens/total"]
+                work_sources["generated_tokens"] = "native state_tokens/total"
+            elif framework == "current" and "work/generated_tokens" in metrics:
+                work["generated_tokens"] = metrics["work/generated_tokens"]
+                work_sources["generated_tokens"] = (
+                    "measurement-only TransferQueue scalar sum"
                 )
-            }
+
+            if framework == "current" and "work/observation_tokens" in metrics:
+                work["observation_tokens"] = metrics["work/observation_tokens"]
+                work_sources["observation_tokens"] = (
+                    "measurement-only TransferQueue scalar sum"
+                )
+
+            if mean_response_length is not None:
+                work["response_tokens"] = (
+                    mean_response_length * trajectories_per_step
+                )
+                work_sources["response_tokens"] = (
+                    "native response_length/mean x completed trajectories"
+                )
+            elif {
+                "generated_tokens",
+                "observation_tokens",
+            }.issubset(work):
+                work["response_tokens"] = (
+                    work["generated_tokens"] + work["observation_tokens"]
+                )
+                work_sources["response_tokens"] = (
+                    "generated_tokens + observation_tokens"
+                )
+
+            if (
+                "observation_tokens" not in work
+                and "response_tokens" in work
+                and "generated_tokens" in work
+            ):
+                observation_tokens = (
+                    work["response_tokens"] - work["generated_tokens"]
+                )
+                if observation_tokens >= 0:
+                    work["observation_tokens"] = observation_tokens
+                    work_sources["observation_tokens"] = (
+                        "response_tokens - generated_tokens"
+                    )
+
+            if {
+                "generated_tokens",
+                "observation_tokens",
+                "response_tokens",
+            }.issubset(work) and not math.isclose(
+                work["generated_tokens"] + work["observation_tokens"],
+                work["response_tokens"],
+                rel_tol=1e-6,
+                abs_tol=1.0,
+            ):
+                raise ValueError(
+                    f"veRL step {step_id} has inconsistent response-token work"
+                )
+
             if "perf/total_num_tokens" in metrics:
                 total_tokens = metrics["perf/total_num_tokens"]
-                throughput["E2E (Tokens/sec)"] = (
-                    total_tokens / total_seconds if total_seconds else 0.0
+                work["processed_tokens"] = total_tokens
+                work_sources["processed_tokens"] = (
+                    "native perf/total_num_tokens (prompt + response)"
                 )
                 if "perf/throughput" in metrics:
-                    throughput["E2E (Tokens/sec/gpu)"] = metrics["perf/throughput"]
-            steps_by_id[step_id] = {
+                    native_throughput["perf/throughput"] = metrics[
+                        "perf/throughput"
+                    ]
+
+            metric_work_names = {
+                "search_count": "work/search_count",
+                "search_errors": "work/search_errors",
+                "invalid_actions": "work/invalid_actions",
+                "trajectory_wall_seconds_mean": (
+                    "work/trajectory_wall_seconds_mean"
+                ),
+                "trajectory_wall_seconds_max": "work/trajectory_wall_seconds_max",
+            }
+            if framework == "original":
+                metric_work_names["search_count"] = "env/search_calls"
+            for output_name, metric_name in metric_work_names.items():
+                if metric_name in metrics:
+                    work[output_name] = metrics[metric_name]
+                    work_sources[output_name] = f"native {metric_name}"
+
+            if "generated_tokens" in work:
+                results["mean_generation_length"] = (
+                    work["generated_tokens"] / trajectories_per_step
+                )
+
+            step = {
                 "step": step_id,
                 "max_steps": 0,
                 "completed_trajectories": trajectories_per_step,
                 "requested_trajectories": trajectories_per_step,
                 "timing_seconds": timing_seconds,
                 "throughput": throughput,
-                "results": _standard_results(metrics),
+                "native_throughput": native_throughput,
+                "results": results,
+                "work_sources": work_sources,
                 "native_metrics": metrics,
             }
+            step.update(work)
+            _add_canonical_throughput(step, training_gpus=training_gpus)
+            steps_by_id[step_id] = step
 
     steps = [steps_by_id[step_id] for step_id in sorted(steps_by_id)]
     max_steps = max(steps_by_id, default=0)
@@ -774,6 +999,21 @@ def parse_verl_training_console(
         "Mapped timing_s fields are native veRL timers. The total step is the "
         "end-to-end boundary; nested or concurrent timers must not be summed."
     )
+    report["token_semantics"] = {
+        "generated_tokens": (
+            "loss-mask/state tokens for original Search-R1; adapter scalar sum "
+            "for current veRL"
+        ),
+        "observation_tokens": "retrieved information tokens excluded from policy loss",
+        "response_tokens": "generated plus retrieved-observation response tokens",
+        "processed_tokens": (
+            "native perf/total_num_tokens: prompt plus response tokens; missing "
+            "when the older fork does not emit it"
+        ),
+        "native_throughput": (
+            "verbatim perf/throughput retained separately as processed tokens/s/GPU"
+        ),
+    }
     return report
 
 
@@ -782,6 +1022,7 @@ def parse_slime_training_console(
     *,
     warmup_steps: int,
     trajectories_per_step: int,
+    training_gpus: int = 8,
 ) -> dict[str, Any]:
     """Parse slime rollout and actor perf dictionaries into the common schema."""
     metrics_by_step: dict[int, dict[str, float]] = defaultdict(dict)
@@ -816,31 +1057,84 @@ def parse_slime_training_console(
             and key.removeprefix("perf/") in _SLIME_TIMING_NAMES
         }
         total_seconds = timing_seconds["total_step_time"]
-        throughput = {
-            "E2E (Samples/sec)": (
-                trajectories_per_step / total_seconds if total_seconds else 0.0
+        throughput: dict[str, float] = {}
+        native_throughput: dict[str, float] = {}
+        results = _standard_results(metrics)
+        work_sources: dict[str, str] = {}
+        work: dict[str, float] = {}
+
+        rollout_seconds = timing_seconds["generation_and_agent"]
+        effective_rate = metrics.get("perf/effective_tokens_per_gpu_per_sec")
+        if effective_rate is not None:
+            work["generated_tokens"] = (
+                effective_rate * rollout_seconds * training_gpus
             )
-        }
+            work_sources["generated_tokens"] = (
+                "native effective token rate x rollout time x rollout GPUs"
+            )
+            native_throughput[
+                "perf/effective_tokens_per_gpu_per_sec"
+            ] = effective_rate
+            mean_generated = results.get("mean_generation_length")
+            if isinstance(mean_generated, (int, float)) and not math.isclose(
+                work["generated_tokens"],
+                mean_generated * trajectories_per_step,
+                rel_tol=1e-6,
+                abs_tol=1.0,
+            ):
+                raise ValueError(
+                    f"slime step {step_id} token rate does not match its "
+                    "effective response mean and GPU count"
+                )
+        elif "mean_generation_length" in results:
+            work["generated_tokens"] = (
+                results["mean_generation_length"] * trajectories_per_step
+            )
+            work_sources["generated_tokens"] = (
+                "native effective response mean x completed trajectories"
+            )
+
         if "perf/tokens_per_gpu_per_sec" in metrics:
-            throughput["Generation (Tokens/sec/gpu)"] = metrics[
-                "perf/tokens_per_gpu_per_sec"
-            ]
+            full_response_rate = metrics["perf/tokens_per_gpu_per_sec"]
+            work["response_tokens"] = (
+                full_response_rate * rollout_seconds * training_gpus
+            )
+            work_sources["response_tokens"] = (
+                "native full-response token rate x rollout time x rollout GPUs"
+            )
+            native_throughput["perf/tokens_per_gpu_per_sec"] = full_response_rate
+
+        if "generated_tokens" in work and "response_tokens" in work:
+            observation_tokens = work["response_tokens"] - work["generated_tokens"]
+            if observation_tokens >= -1e-6:
+                work["observation_tokens"] = max(0.0, observation_tokens)
+                work_sources["observation_tokens"] = (
+                    "response_tokens - generated_tokens"
+                )
+
         if "perf/actor_train_tok_per_s" in metrics:
-            throughput["Policy Training (Tokens/sec/gpu)"] = metrics[
+            native_throughput["perf/actor_train_tok_per_s"] = metrics[
                 "perf/actor_train_tok_per_s"
             ]
-        steps.append(
-            {
-                "step": step_id,
-                "max_steps": max_steps,
-                "completed_trajectories": trajectories_per_step,
-                "requested_trajectories": trajectories_per_step,
-                "timing_seconds": timing_seconds,
-                "throughput": throughput,
-                "results": _standard_results(metrics),
-                "native_metrics": metrics,
-            }
-        )
+        step = {
+            "step": step_id,
+            "max_steps": max_steps,
+            "completed_trajectories": trajectories_per_step,
+            "requested_trajectories": trajectories_per_step,
+            "timing_seconds": timing_seconds,
+            "throughput": throughput,
+            "native_throughput": native_throughput,
+            "results": results,
+            "work_sources": work_sources,
+            "native_metrics": metrics,
+        }
+        step.update(work)
+        if "generated_tokens" in work:
+            step["results"]["mean_generation_length"] = (
+                work["generated_tokens"] / trajectories_per_step
+            )
+        _add_canonical_throughput(step, training_gpus=training_gpus)
+        steps.append(step)
 
     report = _summarize_training_steps(steps, warmup_steps=warmup_steps)
     report["timing_semantics"] = (
@@ -849,6 +1143,22 @@ def parse_slime_training_console(
         "log-probability and actor timers are nested in trainer_work_inclusive; "
         "inclusive fields must not be summed."
     )
+    report["token_semantics"] = {
+        "generated_tokens": (
+            "effective response tokens, which are model generated and trainable"
+        ),
+        "observation_tokens": (
+            "full SGLang response tokens minus effective response tokens"
+        ),
+        "response_tokens": "model-generated plus injected observation tokens",
+        "processed_tokens": (
+            "missing: actor_train_tok_per_s is retained as a native stage rate "
+            "because its aggregation scope is not an end-to-end work counter"
+        ),
+        "native_throughput": (
+            "native rollout-stage and actor-stage rates retained separately"
+        ),
+    }
     return report
 
 
@@ -858,10 +1168,13 @@ def parse_framework_training_console(
     framework: str,
     warmup_steps: int,
     trajectories_per_step: int | None,
+    training_gpus: int = 8,
 ) -> dict[str, Any]:
     """Dispatch console parsing while keeping one output schema."""
     if framework == "nemo":
-        return parse_training_console(path, warmup_steps=warmup_steps)
+        return parse_training_console(
+            path, warmup_steps=warmup_steps, training_gpus=training_gpus
+        )
     if trajectories_per_step is None or trajectories_per_step < 1:
         raise ValueError(
             "Non-NeMo console parsing requires a positive trajectories_per_step"
@@ -872,12 +1185,14 @@ def parse_framework_training_console(
             framework=framework,
             warmup_steps=warmup_steps,
             trajectories_per_step=trajectories_per_step,
+            training_gpus=training_gpus,
         )
     if framework == "slime":
         return parse_slime_training_console(
             path,
             warmup_steps=warmup_steps,
             trajectories_per_step=trajectories_per_step,
+            training_gpus=training_gpus,
         )
     raise ValueError(f"Unsupported framework: {framework}")
 
@@ -1001,6 +1316,12 @@ def _parse_args() -> argparse.Namespace:
         default="nemo",
     )
     parser.add_argument("--trajectories-per-step", type=int)
+    parser.add_argument(
+        "--training-gpus",
+        type=int,
+        default=8,
+        help="Physical GPUs used by the fixed four-way protocol (default: 8)",
+    )
     parser.add_argument("--warmup-steps", type=int, default=1)
     parser.add_argument("--output", type=Path, required=True)
     return parser.parse_args()
@@ -1020,6 +1341,8 @@ def main() -> None:
         )
     if args.warmup_steps < 0:
         raise ValueError("Warmup steps cannot be negative")
+    if args.training_gpus < 1:
+        raise ValueError("Training GPUs must be positive")
     for path in [
         *args.trace,
         *args.prometheus,
@@ -1034,7 +1357,7 @@ def main() -> None:
     if args.timestamped_console is not None and args.console is None:
         raise ValueError("--timestamped-console requires --console")
 
-    report: dict[str, Any] = {"schema_version": 1}
+    report: dict[str, Any] = {"schema_version": 2}
     if args.trace:
         report["trajectory_trace"] = analyze_traces(args.trace)
     if args.prometheus:
@@ -1045,11 +1368,13 @@ def main() -> None:
         report["host_resources"] = analyze_host_samples(args.host_samples)
     if args.console is not None:
         report["framework"] = args.framework
+        report["training_gpus"] = args.training_gpus
         report["training"] = parse_framework_training_console(
             args.console,
             framework=args.framework,
             warmup_steps=args.warmup_steps,
             trajectories_per_step=args.trajectories_per_step,
+            training_gpus=args.training_gpus,
         )
     if args.timestamped_console is not None:
         measurement_window = analyze_step_timestamps(

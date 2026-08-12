@@ -27,6 +27,9 @@ ORIGINAL_SEARCH_R1_RUNTIME_PREP = (
     COMPARISON_DIR / "prepare_original_search_r1_runtime.sh"
 )
 CURRENT_VERL_LAUNCHER = COMPARISON_DIR / "run_current_verl_search_r1.sh"
+CURRENT_VERL_PATCH = (
+    COMPARISON_DIR / "adapters" / "current-verl-comparison.patch"
+)
 SLIME_LAUNCHER = COMPARISON_DIR / "run_slime_search_r1.sh"
 SLIME_CHECKPOINT_PREP = COMPARISON_DIR / "prepare_slime_search_r1_checkpoint.sh"
 SLIME_SEARCH_R1_PATCH = (
@@ -201,7 +204,9 @@ def test_current_verl_launcher_freezes_aligned_protocol() -> None:
     source = _read(CURRENT_VERL_LAUNCHER)
 
     required_fragments = (
-        "expected_verl_commit=5cfb74fa04c7f6e5d98260b8f05157c6a9402695",
+        "expected_verl_upstream_base=5cfb74fa04c7f6e5d98260b8f05157c6a9402695",
+        "expected_verl_patched_head=fb72e8b195095ac3334e870176eb6eaa80184001",
+        "expected_verl_patch_sha256=b09e26165aa0003dbb9ce284a806ca3a094f1ada0be4d4cb462edc3c1f802220",
         "expected_model_revision=d149729398750b98c0af14eb82c78cfe92750796",
         "expected_train_sha256=64325c44a1ac79c53fc70ad36551e34b4d2ac0fa79cf0d3cca1c4d244bdeaa39",
         "expected_eval_sha256=7c7d10d003dce8b0c6c2c0c4177974d0767cd2a380123faf6ee51473bc8e2461",
@@ -245,11 +250,34 @@ def test_current_verl_launcher_freezes_aligned_protocol() -> None:
         '"+ray_kwargs.ray_init._temp_dir=${output_dir}/ray"',
         "actor-and-reference-worker-processes-full-step",
         "nsys_rollout_engine_scope",
+        "measurement_work_counters=scalar-transfer-queue-tags",
+        "timed_rollout_text_dump=disabled",
+        "trainer.rollout_data_dir=null",
     )
     for fragment in required_fragments:
         assert fragment in source
     assert 'if [[ "${num_gpus}" != "8" ]]' in source
     assert "optimizer_updates_per_outer_step=%s" in source
+
+
+def test_current_verl_patch_is_frozen_and_measurement_only() -> None:
+    patch = CURRENT_VERL_PATCH.read_bytes()
+    assert hashlib.sha256(patch).hexdigest() == (
+        "b09e26165aa0003dbb9ce284a806ca3a094f1ada0be4d4cb462edc3c1f802220"
+    )
+    source = patch.decode()
+    for fragment in (
+        "Scalar, measurement-only Search-R1 work counters",
+        '"generated_tokens"',
+        '"observation_tokens"',
+        '"search_count"',
+        '"search_errors"',
+        '"invalid_actions"',
+        '"trajectory_wall_seconds"',
+        'metrics.update(work_metrics)',
+    ):
+        assert fragment in source
+    assert "rollout_data_dir" not in source
 
 
 def test_slime_launcher_freezes_aligned_protocol() -> None:
@@ -284,7 +312,10 @@ def test_slime_launcher_freezes_aligned_protocol() -> None:
         "--custom-generate-function-path slime_search_r1_adapter.generate",
         "--custom-rm-path framework_eval_adapters.slime_reward",
         "--custom-megatron-before-train-step-hook-path slime_search_r1_adapter.align_outer_step_lr",
-        "--save-debug-rollout-data",
+        "save_debug_rollouts=0",
+        "save_debug_rollouts=1",
+        'if [[ "${save_debug_rollouts}" == 1 ]]',
+        "timed_rollout_text_dump=%s",
         "--use-tensorboard",
         'printf \'swanlab_source=%s\\n\'',
         "default_trace_sample_rate=0.1",

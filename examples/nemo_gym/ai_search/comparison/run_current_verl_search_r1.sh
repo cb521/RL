@@ -19,7 +19,9 @@ num_gpus="${SEARCH_R1_NUM_GPUS:-8}"
 lr_schedule_horizon_outer_steps=500
 lr_warmup_outer_steps=142
 
-expected_verl_commit=5cfb74fa04c7f6e5d98260b8f05157c6a9402695
+expected_verl_upstream_base=5cfb74fa04c7f6e5d98260b8f05157c6a9402695
+expected_verl_patched_head=fb72e8b195095ac3334e870176eb6eaa80184001
+expected_verl_patch_sha256=b09e26165aa0003dbb9ce284a806ca3a094f1ada0be4d4cb462edc3c1f802220
 expected_model_revision=d149729398750b98c0af14eb82c78cfe92750796
 expected_train_sha256=64325c44a1ac79c53fc70ad36551e34b4d2ac0fa79cf0d3cca1c4d244bdeaa39
 expected_eval_sha256=7c7d10d003dce8b0c6c2c0c4177974d0767cd2a380123faf6ee51473bc8e2461
@@ -95,8 +97,18 @@ if (( $# != 0 )); then
   exit 1
 fi
 
-if [[ "$(git -C "${verl_root}" rev-parse HEAD)" != "${expected_verl_commit}" ]]; then
-  echo "Current veRL checkout moved from ${expected_verl_commit}." >&2
+actual_verl_head=$(git -C "${verl_root}" rev-parse HEAD)
+if ! git -C "${verl_root}" merge-base --is-ancestor \
+  "${expected_verl_upstream_base}" "${actual_verl_head}"; then
+  echo "Current veRL patch head does not descend from ${expected_verl_upstream_base}." >&2
+  exit 1
+fi
+actual_verl_patch_sha256="$({
+  git -C "${verl_root}" diff --full-index --binary \
+    "${expected_verl_upstream_base}..${actual_verl_head}"
+} | sha256sum | cut -d ' ' -f 1)"
+if [[ "${actual_verl_patch_sha256}" != "${expected_verl_patch_sha256}" ]]; then
+  echo "Current veRL comparison diff does not match ${expected_verl_patch_sha256}." >&2
   exit 1
 fi
 if ! git -C "${verl_root}" diff --quiet || ! git -C "${verl_root}" diff --cached --quiet; then
@@ -112,12 +124,16 @@ for required_file in \
   "${eval_file}" \
   "${comparison_dir}/framework_eval_adapters.py" \
   "${comparison_dir}/verl_search_r1_adapter.py" \
+  "${comparison_dir}/adapters/current-verl-comparison.patch" \
   "${comparison_dir}/adapters/current-verl-search-r1-agent-loop.example.yaml"; do
   if [[ ! -f "${required_file}" ]]; then
     echo "Missing aligned current-veRL artifact: ${required_file}" >&2
     exit 1
   fi
 done
+printf '%s  %s\n' \
+  "${expected_verl_patch_sha256}" \
+  "${comparison_dir}/adapters/current-verl-comparison.patch" | sha256sum --check --status
 printf '%s  %s\n' "${expected_train_sha256}" "${train_file}" | sha256sum --check --status
 printf '%s  %s\n' "${expected_eval_sha256}" "${eval_file}" | sha256sum --check --status
 if [[ "${retriever_url}" != http://*/retrieve && "${retriever_url}" != https://*/retrieve ]]; then
@@ -192,7 +208,10 @@ export PYTHONUNBUFFERED=1
 {
   printf 'framework=current-verl\n'
   printf 'run_mode=%s\nobservability_mode=%s\n' "${run_mode}" "${observability_mode}"
-  printf 'source_commit=%s\n' "${expected_verl_commit}"
+  printf 'source_upstream_base=%s\nsource_patched_head=%s\n' \
+    "${expected_verl_upstream_base}" "${actual_verl_head}"
+  printf 'reference_patch_head=%s\nsource_patch_sha256=%s\n' \
+    "${expected_verl_patched_head}" "${actual_verl_patch_sha256}"
   printf 'adapter_commit=%s\n' "$(git -C "${comparison_dir}" rev-parse HEAD)"
   printf 'model_revision=%s\n' "${expected_model_revision}"
   printf 'train_sha256=%s\n' "${expected_train_sha256}"
@@ -211,6 +230,8 @@ export PYTHONUNBUFFERED=1
   printf 'total_steps=%s\n' "${total_steps}"
   printf 'optimizer=AdamW\noptimizer_lr=1e-6\noptimizer_weight_decay=0.01\n'
   printf 'optimizer_betas=0.9,0.999\noptimizer_epsilon=1e-8\n'
+  printf 'measurement_work_counters=scalar-transfer-queue-tags\n'
+  printf 'timed_rollout_text_dump=disabled\n'
   printf 'lr_schedule_horizon_outer_steps=%s\n' "${lr_schedule_horizon_outer_steps}"
   printf 'lr_warmup_outer_steps=%s\nlr_after_warmup=constant\n' "${lr_warmup_outer_steps}"
   printf 'trace_path=%s\n' "${AI_SEARCH_TRACE_PATH:-disabled}"
@@ -303,7 +324,7 @@ command=(
   trainer.val_only=false
   trainer.resume_mode=disable
   "trainer.default_local_dir=${output_dir}/checkpoints"
-  "trainer.rollout_data_dir=${output_dir}/rollouts"
+  trainer.rollout_data_dir=null
   "trainer.validation_data_dir=${output_dir}/validation"
 )
 

@@ -21,7 +21,7 @@ explicit adapters.
 | --- | --- | --- | --- |
 | NeMo RL | This repository | Recorded in each run manifest | Strict text-action reproduction |
 | Original Search-R1 | [PeterGriffinJin/Search-R1](https://github.com/PeterGriffinJin/Search-R1) | Upstream base `598e61bd1d36895726d28a8d06b3a15bed19f5d3`; aligned patch head `8f4c5b91e4092fb4d8e858cee0689d339aaf310f` | Paper's public veRL fork plus a disclosed comparison patch stack |
-| Current veRL | [verl-project/verl](https://github.com/verl-project/verl) | `5cfb74fa04c7f6e5d98260b8f05157c6a9402695` | Current Agent Loop plus a disclosed Search-R1 adapter |
+| Current veRL | [verl-project/verl](https://github.com/verl-project/verl) | Upstream base `5cfb74fa04c7f6e5d98260b8f05157c6a9402695`; measurement-only patch head `fb72e8b195095ac3334e870176eb6eaa80184001` | Current Agent Loop plus disclosed Search-R1 and measurement adapters |
 | slime | [THUDM/slime](https://github.com/THUDM/slime/tree/main/examples/search-r1) | Upstream base `a74ae3a0ad16bd8b769d5386738e8ae3d1269d7e`; measurement-only patch head `3c30f8b4954e40f7baa0073d83a62134c1aec82b` | Published `Search-R1 lite` example plus disclosed alignment and profiling adapters |
 
 The current veRL row is not an upstream runnable Search-R1 recipe. Its main
@@ -30,7 +30,11 @@ branch retains `preprocess_search_r1_dataset.py`,
 The guide explicitly says that the in-tree `SearchTool` was removed. The old
 example launcher was removed by veRL commit `3467d90a`, and the old tool was
 removed by commit `5a506cc5`. The aligned comparison will therefore add a
-minimal adapter on the frozen current revision and publish that diff.
+minimal adapter on the frozen current revision and publish that diff. A second,
+frozen measurement-only diff carries scalar generated-token, observation-token,
+search, error, and trajectory-time counters through TransferQueue tags. This
+avoids writing full rollout text during timed steps. The manifest records the
+upstream base, patch head, and diff SHA-256.
 
 The original Search-R1 patch commits are comparison artifacts, not upstream
 releases. They add timing and token counters, align the outer-step scheduler
@@ -104,7 +108,10 @@ aligned scoreboard.
 - **Current veRL:** implement the exact text-action state machine on the current
   Agent Loop API. Restoring the deleted structured `SearchTool` is sufficient
   for a native demonstration but not for the strict scoreboard because its
-  function-call syntax and chat template differ from Search-R1.
+  function-call syntax and chat template differ from Search-R1. Its disclosed
+  measurement patch adds only scalar work counters to native step metrics; the
+  timed launcher disables `rollout_data_dir` so observability does not add a
+  full-text rollout dump that the other frameworks do not perform.
 - **slime:** change 3B to the frozen 7B base model, eight rollouts to five and
   two turns to four plus the final answer-only generation. Make the exact-match
   scorer consume the generated response directly: the current scorer ignores
@@ -118,7 +125,9 @@ aligned scoreboard.
   mini-batches in one outer step, matching the other three schedulers; the hook
   does not change gradients or optimizer work. A separate, frozen
   measurement-only patch brackets one outer step with CUDA profiler API calls
-  on actor processes; clean and baseline runs never enter that branch.
+  on actor processes; clean and baseline runs never enter that branch. Full
+  debug rollout serialization is campaign-only and is disabled in smoke and
+  timed performance runs.
 - **NeMo RL:** use `grpo_qwen2_5_7b_search_r1.yaml` with training shuffle
   disabled for the four-way aligned campaign; the paper-reproduction recipe
   may retain its native shuffle setting. Any diagnostic micro-batch override
@@ -189,13 +198,25 @@ diagnostic-only and cannot enter the headline performance table.
 
 The result reports both wall time and actual work:
 
-- completed samples/s, generated tokens/s, trained tokens/s, and GPU-hours per
-  million generated and trained tokens;
+- completed samples/s, model-generated tokens/s, response-sequence tokens/s,
+  processed training-sequence tokens/s where the framework exposes the latter,
+  and GPU-hours per million generated and processed tokens;
 - prompt, generated, retrieved-observation, padding, and loss-mask token counts;
 - median, p95, mean, maximum, and dispersion across steady steps;
 - peak and mean training/retrieval GPU memory and utilization, power, host RSS,
   CPU load, network traffic, retrieval QPS, and retrieval latency;
 - initialization, validation, and checkpoint costs outside the core update.
+
+Those token rates are not interchangeable. Model-generated tokens exclude E5
+observations. Response-sequence tokens include generated tokens plus injected
+observations. Processed training-sequence tokens include the prompt and
+response tokens traversed by the training stack. The analyzer reconstructs
+each rate from its classified per-step work counter and the same end-to-end
+step boundary. Framework-native throughput labels remain in a separate
+`native_throughput` section; in particular, current veRL's
+`perf/total_num_tokens` is prompt plus response, while slime's
+`perf/tokens_per_gpu_per_sec` includes observation tokens. Missing categories
+remain missing rather than being inferred as zero.
 
 ### Non-overlapping critical-path buckets
 

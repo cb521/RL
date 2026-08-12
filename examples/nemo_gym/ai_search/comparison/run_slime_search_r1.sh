@@ -36,6 +36,7 @@ case "${run_mode}" in
     lr_schedule_horizon_optimizer_updates=500
     lr_warmup_optimizer_updates=142
     default_trace_sample_rate=1.0
+    save_debug_rollouts=0
     ;;
   performance)
     prompts_per_step=8
@@ -46,6 +47,7 @@ case "${run_mode}" in
     lr_schedule_horizon_optimizer_updates=500
     lr_warmup_optimizer_updates=142
     default_trace_sample_rate=0.1
+    save_debug_rollouts=0
     ;;
   campaign)
     prompts_per_step=512
@@ -57,6 +59,7 @@ case "${run_mode}" in
     lr_schedule_horizon_optimizer_updates=5000
     lr_warmup_optimizer_updates=1420
     default_trace_sample_rate=0.01
+    save_debug_rollouts=1
     ;;
   *)
     echo "SEARCH_R1_RUN_MODE must be smoke, performance, or campaign, not ${run_mode}." >&2
@@ -230,6 +233,8 @@ export PYTHONUNBUFFERED=1
   printf 'lr_warmup_optimizer_updates=%s\n' "${lr_warmup_optimizer_updates}"
   printf 'lr_warmup_outer_steps=142\nlr_scheduler_granularity=outer_step\n'
   printf 'lr_after_warmup=constant\n'
+  printf 'timed_rollout_text_dump=%s\n' \
+    "$([[ "${save_debug_rollouts}" == 1 ]] && echo campaign-only || echo disabled)"
   printf 'trace_path=%s\n' "${AI_SEARCH_TRACE_PATH:-disabled}"
   printf 'trace_sample_rate=%s\n' "${AI_SEARCH_TRACE_SAMPLE_RATE:-disabled}"
   printf 'tensorboard_dir=%s\n' "${TENSORBOARD_DIR:-disabled}"
@@ -306,8 +311,13 @@ command=(
   --custom-generate-function-path slime_search_r1_adapter.generate
   --custom-rm-path framework_eval_adapters.slime_reward
   --custom-megatron-before-train-step-hook-path slime_search_r1_adapter.align_outer_step_lr
-  --save-debug-rollout-data "${output_dir}/debug-rollouts/rollout_{rollout_id}.pt"
 )
+
+if [[ "${save_debug_rollouts}" == 1 ]]; then
+  command+=(
+    --save-debug-rollout-data "${output_dir}/debug-rollouts/rollout_{rollout_id}.pt"
+  )
+fi
 
 if [[ "${enable_tensorboard}" == "1" ]]; then
   command+=(
