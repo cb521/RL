@@ -12,6 +12,7 @@ import yaml
 
 COMPARISON_DIR = Path(__file__).parent
 NEMO_SEARCH_R1_LAUNCHER = COMPARISON_DIR / "run_nemo_search_r1.sh"
+NEMO_OBSERVED_LAUNCHER = COMPARISON_DIR.parent / "run_ai_search_observed.sh"
 NEMO_FOUR_WAY_CONFIG = COMPARISON_DIR.parent / "grpo_qwen2_5_7b_search_r1_four_way.yaml"
 ORIGINAL_SEARCH_R1_LAUNCHER = COMPARISON_DIR / "run_original_search_r1.sh"
 ORIGINAL_SEARCH_R1_PATCH = (
@@ -94,6 +95,17 @@ def test_nemo_search_r1_launcher_freezes_aligned_protocol() -> None:
         "val_temperature": 0.0,
         "val_top_p": 1.0,
     }
+
+
+def test_nemo_observed_launcher_does_not_repeat_nsys_sample_option() -> None:
+    source = _read(NEMO_OBSERVED_LAUNCHER)
+    default_options = source.split(
+        'NRL_NSYS_EXTRA_OPTIONS="${NRL_NSYS_EXTRA_OPTIONS:-', maxsplit=1
+    )[1].split('}"', maxsplit=1)[0]
+
+    assert '\\"cuda-memory-usage\\":\\"true\\"' in default_options
+    assert '\\"cpuctxsw\\":\\"none\\"' in default_options
+    assert "sample" not in default_options
 
 
 def test_campaign_launchers_save_only_midpoint_and_final_checkpoints() -> None:

@@ -46,7 +46,10 @@ case "${AI_SEARCH_OBSERVABILITY_MODE}" in
     # and NVTX traces are process-local, but device-wide GPU metric sampling is
     # exclusive and would make those workers contend for the same counters.
     # The clean one-second monitor already records device utilization and power.
-    NRL_NSYS_EXTRA_OPTIONS="${NRL_NSYS_EXTRA_OPTIONS:-{\"cuda-memory-usage\":\"true\",\"sample\":\"none\",\"cpuctxsw\":\"none\"}}"
+    # The shared NeMo RL worker config already passes `-s none`. Adding the
+    # equivalent long option (`--sample=none`) makes Nsight reject the command
+    # as a duplicate before Ray can create the worker runtime environment.
+    NRL_NSYS_EXTRA_OPTIONS="${NRL_NSYS_EXTRA_OPTIONS:-{\"cuda-memory-usage\":\"true\",\"cpuctxsw\":\"none\"}}"
     AI_SEARCH_LAUNCH_OVERRIDES+=(
       ++policy.generation.vllm_cfg.enable_vllm_metrics_logger=true
       ++policy.generation.vllm_cfg.vllm_metrics_logger_interval=0.5
