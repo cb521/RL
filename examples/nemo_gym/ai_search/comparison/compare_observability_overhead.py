@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Compare paired baseline and clean NeMo AI-search measurement reports."""
+"""Compare paired baseline and clean four-way AI-search measurement reports."""
 
 from __future__ import annotations
 
@@ -84,6 +84,13 @@ def _compare_group(
 
 def compare_reports(baseline: dict[str, Any], clean: dict[str, Any]) -> dict[str, Any]:
     """Return paired timing, throughput, result, and work deltas."""
+    baseline_framework = baseline.get("framework")
+    clean_framework = clean.get("framework")
+    if baseline_framework != clean_framework:
+        raise ValueError(
+            "Baseline and clean reports use different frameworks: "
+            f"baseline={baseline_framework!r}, clean={clean_framework!r}"
+        )
     baseline_training = baseline["training"]
     clean_training = clean["training"]
     if (
@@ -119,6 +126,7 @@ def compare_reports(baseline: dict[str, Any], clean: dict[str, Any]) -> dict[str
     )
     report = {
         "schema_version": 1,
+        "framework": baseline_framework,
         "measured_step_ids": baseline_ids,
         "validity": {
             "completed_trajectory_counts_match": completed_match,

@@ -158,9 +158,19 @@ uv run python examples/nemo_gym/ai_search/comparison/analyze_observability.py \
   --console /path/to/run/console.log \
   --trace /path/to/run/trajectory-spans.jsonl \
   --prometheus /path/to/run/prometheus.jsonl \
+  --gpu-samples /path/to/run/gpu.csv \
+  --host-samples /path/to/run/host.csv \
+  --framework nemo \
+  --trajectories-per-step 40 \
   --warmup-steps 1 \
   --output /path/to/run/observability-summary.json
 ```
+
+Use `--framework original`, `current`, or `slime` for the other launchers. The
+analyzer maps their native end-to-end and stage timers into one schema while
+retaining the raw metrics and documenting inclusive timers that must not be
+added together. GPU energy is estimated only across contiguous one-second
+samples; collection gaps over five seconds remain explicitly uncovered.
 
 Framework adapters export final evaluation predictions to a common JSONL
 schema with `example_id`, `data_source`, `golden_answers`, `response`, and

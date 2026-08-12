@@ -59,3 +59,13 @@ def test_compare_reports_rejects_mismatched_work() -> None:
 
     with pytest.raises(ValueError, match="identical trajectory work"):
         compare_reports(baseline, clean)
+
+
+def test_compare_reports_rejects_mismatched_frameworks() -> None:
+    baseline = _report([11, 10, 10, 10], [5, 4, 4, 4], [90, 100, 100, 100])
+    clean = _report([12, 11, 11, 11], [6, 5, 5, 5], [85, 90, 90, 90])
+    baseline["framework"] = "nemo"
+    clean["framework"] = "slime"
+
+    with pytest.raises(ValueError, match="different frameworks"):
+        compare_reports(baseline, clean)

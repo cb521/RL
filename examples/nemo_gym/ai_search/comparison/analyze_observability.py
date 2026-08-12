@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 import argparse
+import csv
+import datetime as dt
 import json
 import math
 import re
@@ -27,6 +29,37 @@ _RESULT_PATTERN = re.compile(
 _ROLLOUT_PATTERN = re.compile(
     r"Collecting rollouts:\s+100%.*?\|\s*([0-9]+)/([0-9]+)(?:\s|$)"
 )
+_VERL_STEP_PATTERN = re.compile(r"(?:^|\s)step:(\d+)\s+-")
+_SLIME_PERF_PATTERN = re.compile(r"perf (\d+):\s*\{(.*)\}")
+_DICT_NUMBER_PATTERN = re.compile(
+    r"['\"]([^'\"]+)['\"]:\s*"
+    r"([-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?)"
+)
+
+_VERL_TIMING_NAMES = {
+    "step": "total_step_time",
+    "gen": "generation_and_agent",
+    "policy_logprob": "policy_logprobs",
+    "old_log_prob": "policy_logprobs",
+    "ref": "reference_logprobs",
+    "reward": "reward_calculation",
+    "advantage": "advantage_calculation",
+    "adv": "postprocessing_reward_advantage",
+    "update_actor": "policy_training",
+    "update_weights": "policy_to_engine_synchronization",
+}
+
+_SLIME_TIMING_NAMES = {
+    "step_time": "total_step_time",
+    "rollout_time": "generation_and_agent",
+    "log_probs_time": "policy_logprobs",
+    "ref_log_probs_time": "reference_logprobs",
+    "actor_train_time": "policy_training",
+    "train_wait_time": "trainer_wait_inclusive",
+    "train_time": "trainer_work_inclusive",
+    "data_preprocess_time": "data_preprocess",
+    "update_weights_time": "policy_to_engine_synchronization",
+}
 
 
 def _percentile(values: list[float], percentile: float) -> float:
@@ -290,6 +323,226 @@ def analyze_prometheus(paths: list[Path]) -> dict[str, Any]:
     }
 
 
+def _parse_timestamp(value: str) -> float:
+    normalized = value.strip().replace("Z", "+00:00")
+    try:
+        return dt.datetime.fromisoformat(normalized).timestamp()
+    except ValueError:
+        pass
+    for pattern in ("%Y/%m/%d %H:%M:%S.%f", "%Y/%m/%d %H:%M:%S"):
+        try:
+            return dt.datetime.strptime(normalized, pattern).timestamp()
+        except ValueError:
+            continue
+    raise ValueError(f"Unsupported sample timestamp: {value!r}")
+
+
+def _parse_float(value: str | None) -> float | None:
+    if value is None:
+        return None
+    try:
+        parsed = float(value.strip())
+    except ValueError:
+        return None
+    return parsed if math.isfinite(parsed) else None
+
+
+def _integrate_power(points: list[tuple[float, float]]) -> dict[str, float | int]:
+    points.sort()
+    energy_joules = 0.0
+    integrated_seconds = 0.0
+    skipped_gap_seconds = 0.0
+    interval_count = 0
+    for (first_time, first_power), (second_time, second_power) in zip(
+        points, points[1:]
+    ):
+        elapsed = second_time - first_time
+        if elapsed <= 0:
+            continue
+        # The collector samples once per second. Do not invent energy during a
+        # long monitoring outage; retain the uncovered gap explicitly.
+        if elapsed > 5.0:
+            skipped_gap_seconds += elapsed
+            continue
+        energy_joules += (first_power + second_power) * 0.5 * elapsed
+        integrated_seconds += elapsed
+        interval_count += 1
+    observed_seconds = points[-1][0] - points[0][0] if len(points) > 1 else 0.0
+    return {
+        "energy_wh": energy_joules / 3600.0,
+        "integrated_seconds": integrated_seconds,
+        "observed_seconds": observed_seconds,
+        "skipped_gap_seconds": skipped_gap_seconds,
+        "coverage_fraction": (
+            integrated_seconds / observed_seconds if observed_seconds else 0.0
+        ),
+        "interval_count": interval_count,
+    }
+
+
+def analyze_gpu_samples(paths: list[Path]) -> dict[str, Any]:
+    """Summarize one-second nvidia-smi samples without hiding missing values."""
+    metric_columns = (
+        "memory_used_mib",
+        "memory_total_mib",
+        "gpu_util_percent",
+        "memory_util_percent",
+        "power_watts",
+        "temperature_c",
+        "sm_clock_mhz",
+        "memory_clock_mhz",
+    )
+    per_gpu_values: dict[str, dict[str, list[float]]] = defaultdict(
+        lambda: defaultdict(list)
+    )
+    per_gpu_power: dict[str, list[tuple[float, float]]] = defaultdict(list)
+    timestamps: list[float] = []
+    row_count = 0
+    missing_columns: set[str] = set()
+
+    for path in paths:
+        with path.open(encoding="utf-8", newline="") as source:
+            reader = csv.DictReader(source)
+            fieldnames = set(reader.fieldnames or ())
+            required = {"timestamp", "index"}
+            missing_required = required.difference(fieldnames)
+            if missing_required:
+                raise ValueError(
+                    f"GPU sample CSV {path} is missing {sorted(missing_required)}"
+                )
+            missing_columns.update(set(metric_columns).difference(fieldnames))
+            if "uuid" not in fieldnames:
+                missing_columns.add("uuid")
+            for row in reader:
+                timestamp = _parse_timestamp(row["timestamp"])
+                uuid = (row.get("uuid") or "").strip()
+                gpu = uuid or (
+                    f"index:{row['index'].strip()}:"
+                    f"{(row.get('name') or 'unknown').strip()}"
+                )
+                timestamps.append(timestamp)
+                row_count += 1
+                for column in metric_columns:
+                    value = _parse_float(row.get(column))
+                    if value is None:
+                        continue
+                    per_gpu_values[gpu][column].append(value)
+                    if column == "power_watts":
+                        per_gpu_power[gpu].append((timestamp, value))
+
+    per_gpu = {}
+    all_values: dict[str, list[float]] = defaultdict(list)
+    total_energy_wh = 0.0
+    total_integrated_seconds = 0.0
+    for gpu in sorted(per_gpu_values):
+        summaries = {
+            name: summarize(values)
+            for name, values in sorted(per_gpu_values[gpu].items())
+        }
+        for name, values in per_gpu_values[gpu].items():
+            all_values[name].extend(values)
+        power = _integrate_power(per_gpu_power[gpu])
+        total_energy_wh += float(power["energy_wh"])
+        total_integrated_seconds += float(power["integrated_seconds"])
+        util_values = per_gpu_values[gpu].get("gpu_util_percent", [])
+        per_gpu[gpu] = {
+            "metrics": summaries,
+            "power_integration": power,
+            "active_sample_fraction": (
+                sum(value > 0 for value in util_values) / len(util_values)
+                if util_values
+                else 0.0
+            ),
+            "high_utilization_sample_fraction": (
+                sum(value >= 90 for value in util_values) / len(util_values)
+                if util_values
+                else 0.0
+            ),
+        }
+
+    duration_seconds = max(timestamps) - min(timestamps) if timestamps else 0.0
+    return {
+        "row_count": row_count,
+        "gpu_count": len(per_gpu),
+        "missing_columns": sorted(missing_columns),
+        "duration_seconds": duration_seconds,
+        "all_gpus": {
+            name: summarize(values) for name, values in sorted(all_values.items())
+        },
+        "energy": {
+            "estimated_total_wh": total_energy_wh,
+            "integrated_gpu_seconds": total_integrated_seconds,
+            "method": "per-GPU trapezoidal integration; gaps over five seconds excluded",
+        },
+        "per_gpu": per_gpu,
+    }
+
+
+def analyze_host_samples(paths: list[Path]) -> dict[str, Any]:
+    """Summarize host memory, load, and monotonic network-counter deltas."""
+    metric_columns = ("mem_total_kib", "mem_available_kib", "load_1m")
+    values: dict[str, list[float]] = defaultdict(list)
+    timestamps: list[float] = []
+    network_points: list[tuple[float, float, float]] = []
+    row_count = 0
+    network_columns_available = True
+    for path in paths:
+        with path.open(encoding="utf-8", newline="") as source:
+            reader = csv.DictReader(source)
+            fieldnames = set(reader.fieldnames or ())
+            required = {"timestamp", *metric_columns}
+            missing = required.difference(reader.fieldnames or ())
+            if missing:
+                raise ValueError(f"Host sample CSV {path} is missing {sorted(missing)}")
+            has_network = {"rx_bytes", "tx_bytes"}.issubset(fieldnames)
+            network_columns_available &= has_network
+            for row in reader:
+                timestamp = _parse_timestamp(row["timestamp"])
+                parsed = {
+                    column: _parse_float(row.get(column)) for column in metric_columns
+                }
+                if any(parsed[column] is None for column in metric_columns):
+                    continue
+                timestamps.append(timestamp)
+                row_count += 1
+                for column in metric_columns:
+                    values[column].append(float(parsed[column]))
+                values["mem_used_kib"].append(
+                    float(parsed["mem_total_kib"] - parsed["mem_available_kib"])
+                )
+                rx_bytes = _parse_float(row.get("rx_bytes")) if has_network else None
+                tx_bytes = _parse_float(row.get("tx_bytes")) if has_network else None
+                if rx_bytes is not None and tx_bytes is not None:
+                    network_points.append(
+                        (
+                            timestamp,
+                            rx_bytes,
+                            tx_bytes,
+                        )
+                    )
+
+    network_points.sort()
+    rx_bytes = 0.0
+    tx_bytes = 0.0
+    for (_, first_rx, first_tx), (_, second_rx, second_tx) in zip(
+        network_points, network_points[1:]
+    ):
+        rx_bytes += max(0.0, second_rx - first_rx)
+        tx_bytes += max(0.0, second_tx - first_tx)
+    return {
+        "row_count": row_count,
+        "duration_seconds": max(timestamps) - min(timestamps) if timestamps else 0.0,
+        "metrics": {
+            name: summarize(series) for name, series in sorted(values.items())
+        },
+        "network_counter_deltas": {
+            "available": network_columns_available,
+            "rx_bytes": rx_bytes if network_columns_available else None,
+            "tx_bytes": tx_bytes if network_columns_available else None,
+        },
+    }
+
+
 def parse_training_console(path: Path, warmup_steps: int) -> dict[str, Any]:
     steps: list[dict[str, Any]] = []
     current: dict[str, Any] | None = None
@@ -339,6 +592,12 @@ def parse_training_console(path: Path, warmup_steps: int) -> dict[str, Any]:
 
     if current is not None:
         steps.append(current)
+    return _summarize_training_steps(steps, warmup_steps=warmup_steps)
+
+
+def _summarize_training_steps(
+    steps: list[dict[str, Any]], warmup_steps: int
+) -> dict[str, Any]:
     steady_steps = [step for step in steps if step["step"] > warmup_steps]
     timing_names = sorted(
         {name for step in steady_steps for name in step["timing_seconds"]}
@@ -384,11 +643,223 @@ def parse_training_console(path: Path, warmup_steps: int) -> dict[str, Any]:
     }
 
 
+def _parse_dash_metrics(line: str, match: re.Match[str]) -> dict[str, float]:
+    metrics: dict[str, float] = {}
+    for field in line[match.end() :].split(" - "):
+        key, separator, raw_value = field.rpartition(":")
+        if not separator or not key:
+            continue
+        try:
+            metrics[key.strip()] = float(raw_value.strip())
+        except ValueError:
+            continue
+    return metrics
+
+
+def _standard_results(metrics: dict[str, float]) -> dict[str, float]:
+    result_keys = {
+        "avg_reward": (
+            "critic/rewards/mean",
+            "reward/mean",
+            "rollout/rewards/mean",
+        ),
+        "mean_generation_length": (
+            "response_length/mean",
+            "response_len/mean",
+            "rollout/response_len/mean",
+        ),
+    }
+    results = {}
+    for output_name, candidates in result_keys.items():
+        for candidate in candidates:
+            if candidate in metrics:
+                results[output_name] = metrics[candidate]
+                break
+    return results
+
+
+def parse_verl_training_console(
+    path: Path,
+    *,
+    framework: str,
+    warmup_steps: int,
+    trajectories_per_step: int,
+) -> dict[str, Any]:
+    """Parse original or current veRL's console logger into the common schema."""
+    steps_by_id: dict[int, dict[str, Any]] = {}
+    with path.open(encoding="utf-8", errors="replace") as source:
+        for raw_line in source:
+            line = _ANSI_PATTERN.sub("", raw_line.rstrip())
+            match = _VERL_STEP_PATTERN.search(line)
+            if match is None:
+                continue
+            step_id = int(match.group(1))
+            metrics = _parse_dash_metrics(line, match)
+            if "timing_s/step" not in metrics or "timing_s/update_actor" not in metrics:
+                continue
+            timing_seconds = {}
+            for key, value in metrics.items():
+                if not key.startswith("timing_s/"):
+                    continue
+                native_name = key.removeprefix("timing_s/")
+                normalized_name = _VERL_TIMING_NAMES.get(native_name, key)
+                if framework == "current" and native_name == "adv":
+                    normalized_name = "advantage_calculation"
+                timing_seconds[normalized_name] = value
+            total_seconds = timing_seconds["total_step_time"]
+            throughput = {
+                "E2E (Samples/sec)": (
+                    trajectories_per_step / total_seconds if total_seconds else 0.0
+                )
+            }
+            if "perf/total_num_tokens" in metrics:
+                total_tokens = metrics["perf/total_num_tokens"]
+                throughput["E2E (Tokens/sec)"] = (
+                    total_tokens / total_seconds if total_seconds else 0.0
+                )
+                if "perf/throughput" in metrics:
+                    throughput["E2E (Tokens/sec/gpu)"] = metrics["perf/throughput"]
+            steps_by_id[step_id] = {
+                "step": step_id,
+                "max_steps": 0,
+                "completed_trajectories": trajectories_per_step,
+                "requested_trajectories": trajectories_per_step,
+                "timing_seconds": timing_seconds,
+                "throughput": throughput,
+                "results": _standard_results(metrics),
+                "native_metrics": metrics,
+            }
+
+    steps = [steps_by_id[step_id] for step_id in sorted(steps_by_id)]
+    max_steps = max(steps_by_id, default=0)
+    for step in steps:
+        step["max_steps"] = max_steps
+    report = _summarize_training_steps(steps, warmup_steps=warmup_steps)
+    report["timing_semantics"] = (
+        "Mapped timing_s fields are native veRL timers. The total step is the "
+        "end-to-end boundary; nested or concurrent timers must not be summed."
+    )
+    return report
+
+
+def parse_slime_training_console(
+    path: Path,
+    *,
+    warmup_steps: int,
+    trajectories_per_step: int,
+) -> dict[str, Any]:
+    """Parse slime rollout and actor perf dictionaries into the common schema."""
+    metrics_by_step: dict[int, dict[str, float]] = defaultdict(dict)
+    evidence_by_step: dict[int, set[str]] = defaultdict(set)
+    with path.open(encoding="utf-8", errors="replace") as source:
+        for raw_line in source:
+            line = _ANSI_PATTERN.sub("", raw_line.rstrip())
+            match = _SLIME_PERF_PATTERN.search(line)
+            if match is None:
+                continue
+            step_id = int(match.group(1)) + 1
+            metrics = {
+                name: float(value)
+                for name, value in _DICT_NUMBER_PATTERN.findall(match.group(2))
+            }
+            metrics_by_step[step_id].update(metrics)
+            if "perf/rollout_time" in metrics:
+                evidence_by_step[step_id].add("rollout")
+            if "perf/actor_train_time" in metrics:
+                evidence_by_step[step_id].add("update")
+
+    steps = []
+    max_steps = max(metrics_by_step, default=0)
+    for step_id in sorted(metrics_by_step):
+        metrics = metrics_by_step[step_id]
+        if evidence_by_step[step_id] != {"rollout", "update"}:
+            continue
+        timing_seconds = {
+            _SLIME_TIMING_NAMES.get(key.removeprefix("perf/"), key): value
+            for key, value in metrics.items()
+            if key.startswith("perf/")
+            and key.removeprefix("perf/") in _SLIME_TIMING_NAMES
+        }
+        total_seconds = timing_seconds["total_step_time"]
+        throughput = {
+            "E2E (Samples/sec)": (
+                trajectories_per_step / total_seconds if total_seconds else 0.0
+            )
+        }
+        if "perf/tokens_per_gpu_per_sec" in metrics:
+            throughput["Generation (Tokens/sec/gpu)"] = metrics[
+                "perf/tokens_per_gpu_per_sec"
+            ]
+        if "perf/actor_train_tok_per_s" in metrics:
+            throughput["Policy Training (Tokens/sec/gpu)"] = metrics[
+                "perf/actor_train_tok_per_s"
+            ]
+        steps.append(
+            {
+                "step": step_id,
+                "max_steps": max_steps,
+                "completed_trajectories": trajectories_per_step,
+                "requested_trajectories": trajectories_per_step,
+                "timing_seconds": timing_seconds,
+                "throughput": throughput,
+                "results": _standard_results(metrics),
+                "native_metrics": metrics,
+            }
+        )
+
+    report = _summarize_training_steps(steps, warmup_steps=warmup_steps)
+    report["timing_semantics"] = (
+        "total_step_time is slime's train_wait plus train boundary. "
+        "generation_and_agent is nested in trainer_wait_inclusive, while "
+        "log-probability and actor timers are nested in trainer_work_inclusive; "
+        "inclusive fields must not be summed."
+    )
+    return report
+
+
+def parse_framework_training_console(
+    path: Path,
+    *,
+    framework: str,
+    warmup_steps: int,
+    trajectories_per_step: int | None,
+) -> dict[str, Any]:
+    """Dispatch console parsing while keeping one output schema."""
+    if framework == "nemo":
+        return parse_training_console(path, warmup_steps=warmup_steps)
+    if trajectories_per_step is None or trajectories_per_step < 1:
+        raise ValueError(
+            "Non-NeMo console parsing requires a positive trajectories_per_step"
+        )
+    if framework in {"original", "current"}:
+        return parse_verl_training_console(
+            path,
+            framework=framework,
+            warmup_steps=warmup_steps,
+            trajectories_per_step=trajectories_per_step,
+        )
+    if framework == "slime":
+        return parse_slime_training_console(
+            path,
+            warmup_steps=warmup_steps,
+            trajectories_per_step=trajectories_per_step,
+        )
+    raise ValueError(f"Unsupported framework: {framework}")
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--trace", type=Path, action="append", default=[])
     parser.add_argument("--prometheus", type=Path, action="append", default=[])
+    parser.add_argument("--gpu-samples", type=Path, action="append", default=[])
+    parser.add_argument("--host-samples", type=Path, action="append", default=[])
     parser.add_argument("--console", type=Path)
+    parser.add_argument(
+        "--framework",
+        choices=("nemo", "original", "current", "slime"),
+        default="nemo",
+    )
+    parser.add_argument("--trajectories-per-step", type=int)
     parser.add_argument("--warmup-steps", type=int, default=1)
     parser.add_argument("--output", type=Path, required=True)
     return parser.parse_args()
@@ -396,11 +867,25 @@ def _parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = _parse_args()
-    if not args.trace and not args.prometheus and args.console is None:
-        raise ValueError("Provide at least one trace, Prometheus, or console input")
+    if (
+        not args.trace
+        and not args.prometheus
+        and not args.gpu_samples
+        and not args.host_samples
+        and args.console is None
+    ):
+        raise ValueError(
+            "Provide at least one trace, Prometheus, resource sample, or console input"
+        )
     if args.warmup_steps < 0:
         raise ValueError("Warmup steps cannot be negative")
-    for path in [*args.trace, *args.prometheus, args.console]:
+    for path in [
+        *args.trace,
+        *args.prometheus,
+        *args.gpu_samples,
+        *args.host_samples,
+        args.console,
+    ]:
         if path is not None and not path.is_file():
             raise FileNotFoundError(path)
 
@@ -409,9 +894,17 @@ def main() -> None:
         report["trajectory_trace"] = analyze_traces(args.trace)
     if args.prometheus:
         report["prometheus"] = analyze_prometheus(args.prometheus)
+    if args.gpu_samples:
+        report["gpu_resources"] = analyze_gpu_samples(args.gpu_samples)
+    if args.host_samples:
+        report["host_resources"] = analyze_host_samples(args.host_samples)
     if args.console is not None:
-        report["training"] = parse_training_console(
-            args.console, warmup_steps=args.warmup_steps
+        report["framework"] = args.framework
+        report["training"] = parse_framework_training_console(
+            args.console,
+            framework=args.framework,
+            warmup_steps=args.warmup_steps,
+            trajectories_per_step=args.trajectories_per_step,
         )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
