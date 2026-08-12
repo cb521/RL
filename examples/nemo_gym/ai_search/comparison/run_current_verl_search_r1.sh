@@ -374,8 +374,10 @@ if [[ "${observability_mode}" == profile ]]; then
     global_profiler.profile_continuous_steps=false
     "global_profiler.save_path=${output_dir}/nsight"
     global_profiler.global_tool_config.nsys.discrete=false
+    global_profiler.global_tool_config.nsys.controller_nsight_options.trace=cuda,nvtx,cublas
     +global_profiler.global_tool_config.nsys.controller_nsight_options.sample=none
     +global_profiler.global_tool_config.nsys.controller_nsight_options.cpuctxsw=none
+    global_profiler.global_tool_config.nsys.worker_nsight_options.trace=cuda,nvtx,cublas
     +global_profiler.global_tool_config.nsys.worker_nsight_options.sample=none
     +global_profiler.global_tool_config.nsys.worker_nsight_options.cpuctxsw=none
     actor_rollout_ref.actor.profiler.enable=true
