@@ -77,14 +77,20 @@ case "${observability_mode}" in
   baseline)
     trainer_logger="['console']"
     trace_sample_rate=disabled
+    prometheus_scope=disabled
+    engine_prometheus_scope=disabled
     ;;
   clean)
     trainer_logger="['console','local']"
     trace_sample_rate="${SEARCH_R1_TRACE_SAMPLE_RATE:-${default_trace_sample_rate}}"
+    prometheus_scope=driver-step-metrics
+    engine_prometheus_scope=missing-embedded-old-vllm
     ;;
   profile)
     trainer_logger="['console','local']"
     trace_sample_rate="${SEARCH_R1_TRACE_SAMPLE_RATE:-1.0}"
+    prometheus_scope=driver-step-metrics
+    engine_prometheus_scope=missing-embedded-old-vllm
     ;;
   *)
     echo "SEARCH_R1_OBSERVABILITY_MODE must be baseline, clean, or profile." >&2
@@ -263,6 +269,8 @@ export PYTHONUNBUFFERED=1
   printf 'trace_path=%s\ntrace_sample_rate=%s\n' "${AI_SEARCH_TRACE_PATH:-disabled}" "${AI_SEARCH_TRACE_SAMPLE_RATE:-disabled}"
   printf 'metrics_path=%s\ntensorboard_dir=%s\n' "${AI_SEARCH_METRICS_PATH:-disabled}" "${AI_SEARCH_TENSORBOARD_DIR:-disabled}"
   printf 'prometheus_url=%s\n' "$([[ -n "${AI_SEARCH_PROMETHEUS_PORT:-}" ]] && printf 'http://127.0.0.1:%s/metrics' "${AI_SEARCH_PROMETHEUS_PORT}" || echo disabled)"
+  printf 'prometheus_scope=%s\nengine_prometheus_scope=%s\n' \
+    "${prometheus_scope}" "${engine_prometheus_scope}"
   printf 'nsys_executable=%s\nnsys_version=%s\n' "${nsys_executable}" "${nsys_version}"
   printf 'nsys_profile_step=%s\nray_tmpdir=%s\n' "${SEARCH_R1_NSYS_PROFILE_STEP:-disabled}" "${SEARCH_R1_RAY_TMPDIR:-disabled}"
   printf 'nsys_scope=%s\n' "$([[ "${observability_mode}" == profile ]] && echo actor-rollout-and-reference-worker-processes-full-step || echo disabled)"

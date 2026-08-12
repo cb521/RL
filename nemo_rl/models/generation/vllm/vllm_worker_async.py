@@ -352,7 +352,7 @@ class VllmAsyncGenerationWorkerImpl(
         from typing import List, Optional, Union
 
         from fastapi import Request
-        from fastapi.responses import JSONResponse, StreamingResponse
+        from fastapi.responses import JSONResponse, Response, StreamingResponse
         from vllm.entrypoints.openai.chat_completion.protocol import (
             ChatCompletionRequest,
             ChatCompletionResponse,
@@ -787,6 +787,19 @@ class VllmAsyncGenerationWorkerImpl(
                 )
             elif isinstance(generator, TokenizeResponse):
                 return JSONResponse(content=generator.model_dump())
+
+        ########################################
+        # Native vLLM Prometheus endpoint
+        ########################################
+        if self.cfg["vllm_cfg"].get("enable_vllm_metrics_logger", False):
+            from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+
+            @app.get("/metrics", include_in_schema=False)
+            async def prometheus_metrics():
+                return Response(
+                    content=generate_latest(),
+                    headers={"Content-Type": CONTENT_TYPE_LATEST},
+                )
 
         ########################################
         # Logging

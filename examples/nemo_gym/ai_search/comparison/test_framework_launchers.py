@@ -27,14 +27,10 @@ ORIGINAL_SEARCH_R1_RUNTIME_PREP = (
     COMPARISON_DIR / "prepare_original_search_r1_runtime.sh"
 )
 CURRENT_VERL_LAUNCHER = COMPARISON_DIR / "run_current_verl_search_r1.sh"
-CURRENT_VERL_PATCH = (
-    COMPARISON_DIR / "adapters" / "current-verl-comparison.patch"
-)
+CURRENT_VERL_PATCH = COMPARISON_DIR / "adapters" / "current-verl-comparison.patch"
 SLIME_LAUNCHER = COMPARISON_DIR / "run_slime_search_r1.sh"
 SLIME_CHECKPOINT_PREP = COMPARISON_DIR / "prepare_slime_search_r1_checkpoint.sh"
-SLIME_SEARCH_R1_PATCH = (
-    COMPARISON_DIR / "adapters" / "slime-search-r1-comparison.patch"
-)
+SLIME_SEARCH_R1_PATCH = COMPARISON_DIR / "adapters" / "slime-search-r1-comparison.patch"
 GRPO_SYNC = COMPARISON_DIR.parents[3] / "nemo_rl" / "algorithms" / "grpo_sync.py"
 
 
@@ -80,6 +76,8 @@ def test_nemo_search_r1_launcher_freezes_aligned_protocol() -> None:
         "checkpointing.save_period=100",
         'export AI_SEARCH_OBSERVABILITY_MODE="${observability_mode}"',
         'trace_sample_rate="${SEARCH_R1_TRACE_SAMPLE_RATE:-1.0}"',
+        "engine_prometheus_scope",
+        "vllm-http-servers",
         "policy-and-vllm-worker-processes-step-2",
         'health_url="${retriever_url%/retrieve}/healthz"',
         "The strict NeMo four-way launcher does not accept positional overrides.",
@@ -139,11 +137,13 @@ def test_original_search_r1_launcher_freezes_aligned_protocol() -> None:
         'export AI_SEARCH_METRICS_PATH="${output_dir}/observability/step-metrics.jsonl"',
         'export AI_SEARCH_TENSORBOARD_DIR="${output_dir}/tensorboard"',
         'export AI_SEARCH_PROMETHEUS_PORT="${prometheus_port}"',
+        "prometheus_scope=driver-step-metrics",
+        "engine_prometheus_scope=missing-embedded-old-vllm",
         'original_python="${ORIGINAL_SEARCH_R1_PYTHON:-python3}"',
         "prepare_original_search_r1_runtime.sh first",
         'ORIGINAL_SEARCH_R1_VENV="${runtime_root}"',
         "The strict original Search-R1 launcher does not accept positional overrides.",
-        'trainer_logger="[\'console\',\'local\']"',
+        "trainer_logger=\"['console','local']\"",
         '"trainer.logger=${trainer_logger}"',
         "SEARCH_R1_NSYS_PROFILE_STEP=2",
         "SEARCH_R1_NSYS_OUTPUT_PREFIX=original_search_r1_worker_%p",
@@ -184,7 +184,7 @@ def test_original_search_r1_runtime_is_hash_locked() -> None:
         "--torch-backend cu121",
         "--require-hashes",
         'if [[ "$(uname -m)" != x86_64 ]]',
-        'if torch._C._GLIBCXX_USE_CXX11_ABI is not False:',
+        "if torch._C._GLIBCXX_USE_CXX11_ABI is not False:",
         "ORIGINAL_SEARCH_R1_RUNTIME_CREATE_PASS",
         "ORIGINAL_SEARCH_R1_RUNTIME_REUSE_PASS",
     ):
@@ -269,6 +269,13 @@ def test_current_verl_launcher_freezes_aligned_protocol() -> None:
         "measurement_work_counters=scalar-transfer-queue-tags",
         "timed_rollout_text_dump=disabled",
         "trainer.rollout_data_dir=null",
+        "disable_log_stats=false",
+        "engine_prometheus_enabled=true",
+        "actor_rollout_ref.rollout.disable_log_stats=${disable_log_stats}",
+        "actor_rollout_ref.rollout.prometheus.enable=${engine_prometheus_enabled}",
+        "actor_rollout_ref.rollout.prometheus.file=${output_dir}/observability/rollout-prometheus.yml",
+        "actor_rollout_ref.rollout.prometheus.served_model_name=Qwen2.5-7B",
+        "engine_prometheus_scope=vllm-http-servers",
     )
     for fragment in required_fragments:
         assert fragment in source
@@ -290,7 +297,7 @@ def test_current_verl_patch_is_frozen_and_measurement_only() -> None:
         '"search_errors"',
         '"invalid_actions"',
         '"trajectory_wall_seconds"',
-        'metrics.update(work_metrics)',
+        "metrics.update(work_metrics)",
     ):
         assert fragment in source
     assert "rollout_data_dir" not in source
@@ -334,15 +341,17 @@ def test_slime_launcher_freezes_aligned_protocol() -> None:
         'if [[ "${save_debug_rollouts}" == 1 ]]',
         "timed_rollout_text_dump=%s",
         "--use-tensorboard",
-        'printf \'swanlab_source=%s\\n\'',
+        "printf 'swanlab_source=%s\\n'",
         "default_trace_sample_rate=0.1",
         'export AI_SEARCH_TRACE_PATH="${output_dir}/trajectory-spans.jsonl"',
-        '\"AI_SEARCH_TRACE_SAMPLE_RATE\":\"%s\"',
+        '"AI_SEARCH_TRACE_SAMPLE_RATE":"%s"',
         "SEARCH_R1_OUTPUT_DIR already contains a run manifest",
         "The strict slime launcher does not accept positional overrides.",
         'observability_mode="${SEARCH_R1_OBSERVABILITY_MODE:-clean}"',
         "SEARCH_R1_NSYS_PROFILE_ROLLOUT_ID=1",
         '"capture-range":"cudaProfilerApi"',
+        "engine_prometheus_scope=not-collected-native-always-on",
+        "engine_prometheus_scope=sglang-router-and-engine-http-servers",
     )
     for fragment in required_fragments:
         assert fragment in source

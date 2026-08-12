@@ -84,7 +84,9 @@ questions and must not be collapsed into one profiler run:
    end-to-end result.
 3. Prometheus records bounded-cardinality engine and retrieval-service counters,
    gauges, and latency histograms. The local resource server and the observed
-   official E5 launcher expose `/metrics`.
+   official E5 launcher expose `/metrics`. The formal runner discovers dynamic
+   NeMo/current-veRL vLLM addresses and slime router/engine addresses from their
+   startup records, then scrapes every announced endpoint.
 4. Sampled JSONL spans join model calls, tool calls, resource-server queueing,
    and remote E5 batches by trajectory session and provider batch IDs.
 
@@ -148,8 +150,23 @@ with:
 ```bash
 uv run python examples/nemo_gym/ai_search/comparison/collect_prometheus.py \
   --endpoint e5=http://RETRIEVER_HOST:8000/metrics \
-  --output /path/to/run/prometheus.jsonl
+  --output /path/to/run/retriever-prometheus.jsonl
 ```
+
+For framework-native endpoints, first run:
+
+```bash
+uv run python examples/nemo_gym/ai_search/comparison/discover_prometheus_endpoints.py \
+  --framework nemo \
+  --console /path/to/run/console.log
+```
+
+Use `original`, `current`, or `slime` for the other launchers, and pass every
+printed `NAME=URL` line as a separate `--endpoint` argument to the collector.
+NeMo and current veRL expose native vLLM metrics in observed modes, while slime
+exposes its native SGLang router and engine metrics. The original fork exposes
+patched driver/step metrics, but its embedded old vLLM runtime has no separate
+HTTP metrics endpoint; that engine evidence remains explicitly missing.
 
 Merge the independent evidence after a run:
 
@@ -158,7 +175,8 @@ uv run python examples/nemo_gym/ai_search/comparison/analyze_observability.py \
   --console /path/to/run/console.log \
   --timestamped-console /path/to/run/console-timestamps.tsv \
   --trace /path/to/run/trajectory-spans.jsonl \
-  --prometheus /path/to/run/prometheus.jsonl \
+  --prometheus /path/to/run/retriever-prometheus.jsonl \
+  --prometheus /path/to/run/framework-prometheus.jsonl \
   --gpu-samples /path/to/run/gpu.csv \
   --host-samples /path/to/run/host.csv \
   --framework nemo \

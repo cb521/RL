@@ -172,6 +172,8 @@ nemo_commit=$(git -C "${nemo_root}" rev-parse HEAD)
     "${val_period}" "${val_at_start}" "${val_at_end}"
   printf 'checkpoint_enabled=%s\ncheckpoint_period=100\n' "${checkpoint_enabled}"
   printf 'trace_sample_rate=%s\n' "${trace_sample_rate}"
+  printf 'engine_prometheus_scope=%s\n' \
+    "$([[ "${observability_mode}" == baseline ]] && echo disabled || echo vllm-http-servers)"
   printf 'nsys_profile_step_range=%s\n' "$([[ "${observability_mode}" == profile ]] && echo 2:3 || echo disabled)"
   printf 'nsys_scope=%s\n' "$([[ "${observability_mode}" == profile ]] && echo policy-and-vllm-worker-processes-step-2 || echo disabled)"
   printf 'nsys_rollout_engine_scope=%s\n' "$([[ "${observability_mode}" == profile ]] && echo covered || echo disabled)"

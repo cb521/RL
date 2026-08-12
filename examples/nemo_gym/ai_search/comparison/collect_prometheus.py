@@ -19,7 +19,7 @@ from typing import Any, Pattern
 from prometheus_client.parser import text_string_to_metric_families
 
 
-DEFAULT_INCLUDE = r"^(nemo_ai_search_|search_r1_e5_|vllm:|ray_node_)"
+DEFAULT_INCLUDE = r"^(nemo_ai_search_|search_r1_|vllm:|sglang[:_]|router_|ray_node_)"
 
 
 @dataclass(frozen=True)

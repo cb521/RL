@@ -356,6 +356,13 @@ class _FakeFastAPIApp:
 
         return decorator
 
+    def get(self, path, **_kwargs):
+        def decorator(func):
+            self.routes.append((path, func))
+            return func
+
+        return decorator
+
 
 def test_vllm_async_http_server_loads_reasoning_parser_plugin(monkeypatch):
     (
@@ -369,6 +376,7 @@ def test_vllm_async_http_server_loads_reasoning_parser_plugin(monkeypatch):
         "temperature": 1.0,
         "top_p": 1.0,
         "vllm_cfg": {
+            "enable_vllm_metrics_logger": True,
             "tool_parser_plugin": "/plugins/tool_parser.py",
             "reasoning_parser_plugin": "/plugins/reasoning_parser.py",
             "http_server_serving_chat_kwargs": {
@@ -391,6 +399,7 @@ def test_vllm_async_http_server_loads_reasoning_parser_plugin(monkeypatch):
         "/plugins/reasoning_parser.py"
     )
     assert openai_serving_chat.instances[0].kwargs["reasoning_parser"] == "nano_v3"
+    assert any(path == "/metrics" for path, _route in app.routes)
     # make sure that the config attribute does not leak into `http_server_serving_chat_kwargs`
     assert "reasoning_parser_plugin" not in openai_serving_chat.instances[0].kwargs
 

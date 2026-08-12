@@ -73,14 +73,23 @@ case "${observability_mode}" in
   baseline)
     logger="['console']"
     trace_sample_rate=disabled
+    disable_log_stats=true
+    engine_prometheus_enabled=false
+    engine_prometheus_scope=disabled
     ;;
   clean)
     logger="['console','swanlab','tensorboard']"
     trace_sample_rate="${SEARCH_R1_TRACE_SAMPLE_RATE:-${default_trace_sample_rate}}"
+    disable_log_stats=false
+    engine_prometheus_enabled=true
+    engine_prometheus_scope=vllm-http-servers
     ;;
   profile)
     logger="['console','swanlab','tensorboard']"
     trace_sample_rate="${SEARCH_R1_TRACE_SAMPLE_RATE:-1.0}"
+    disable_log_stats=false
+    engine_prometheus_enabled=true
+    engine_prometheus_scope=vllm-http-servers
     ;;
   *)
     echo "SEARCH_R1_OBSERVABILITY_MODE must be baseline, clean, or profile." >&2
@@ -162,6 +171,7 @@ mkdir -p \
   "${output_dir}/checkpoints" \
   "${output_dir}/nsight" \
   "${output_dir}/nsight-tmp" \
+  "${output_dir}/observability" \
   "${output_dir}/ray" \
   "${output_dir}/rollouts" \
   "${output_dir}/validation" \
@@ -236,6 +246,9 @@ export PYTHONUNBUFFERED=1
   printf 'lr_warmup_outer_steps=%s\nlr_after_warmup=constant\n' "${lr_warmup_outer_steps}"
   printf 'trace_path=%s\n' "${AI_SEARCH_TRACE_PATH:-disabled}"
   printf 'trace_sample_rate=%s\n' "${AI_SEARCH_TRACE_SAMPLE_RATE:-disabled}"
+  printf 'engine_prometheus_scope=%s\n' "${engine_prometheus_scope}"
+  printf 'engine_prometheus_config=%s\n' \
+    "$([[ "${engine_prometheus_enabled}" == true ]] && echo "${output_dir}/observability/rollout-prometheus.yml" || echo disabled)"
   printf 'swanlab_mode=%s\ntensorboard_dir=%s\n' "${SWANLAB_MODE:-disabled}" "${TENSORBOARD_DIR:-disabled}"
   printf 'nsys_executable=%s\nnsys_version=%s\n' "${nsys_executable}" "${nsys_version}"
   printf 'nsys_profile_step=%s\nray_tmpdir=%s\n' "$([[ "${observability_mode}" == profile ]] && echo 2 || echo disabled)" "$([[ "${observability_mode}" == profile ]] && echo "${output_dir}/ray" || echo disabled)"
@@ -285,6 +298,10 @@ command=(
   actor_rollout_ref.actor.fsdp_config.optimizer_offload=false
   actor_rollout_ref.rollout.name=vllm
   actor_rollout_ref.rollout.mode=async
+  "actor_rollout_ref.rollout.disable_log_stats=${disable_log_stats}"
+  "actor_rollout_ref.rollout.prometheus.enable=${engine_prometheus_enabled}"
+  "actor_rollout_ref.rollout.prometheus.file=${output_dir}/observability/rollout-prometheus.yml"
+  actor_rollout_ref.rollout.prometheus.served_model_name=Qwen2.5-7B
   actor_rollout_ref.rollout.tensor_model_parallel_size=1
   actor_rollout_ref.rollout.gpu_memory_utilization=0.5
   actor_rollout_ref.rollout.prompt_length=2048

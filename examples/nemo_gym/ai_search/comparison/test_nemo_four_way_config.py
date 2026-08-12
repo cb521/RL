@@ -9,6 +9,7 @@ from omegaconf import OmegaConf
 
 from nemo_rl.utils.config import (
     load_config_with_inheritance,
+    parse_hydra_overrides,
     register_omegaconf_resolvers,
 )
 
@@ -74,3 +75,20 @@ def test_performance_overrides_resolve_to_one_update_per_outer_step() -> None:
     assert config["grpo"]["val_at_start"] is False
     assert config["grpo"]["val_at_end"] is False
     assert config["checkpointing"]["enabled"] is False
+
+
+def test_observed_vllm_metric_overrides_resolve() -> None:
+    register_omegaconf_resolvers()
+    config = load_config_with_inheritance(RECIPE)
+    config = parse_hydra_overrides(
+        config,
+        [
+            "++policy.generation.vllm_cfg.enable_vllm_metrics_logger=true",
+            "++policy.generation.vllm_cfg.vllm_metrics_logger_interval=0.5",
+        ],
+    )
+    resolved = OmegaConf.to_container(config, resolve=True)
+    assert isinstance(resolved, dict)
+    vllm_config = resolved["policy"]["generation"]["vllm_cfg"]
+    assert vllm_config["enable_vllm_metrics_logger"] is True
+    assert vllm_config["vllm_metrics_logger_interval"] == 0.5

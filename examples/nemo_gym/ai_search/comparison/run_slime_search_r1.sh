@@ -75,14 +75,17 @@ case "${observability_mode}" in
   baseline)
     enable_tensorboard=0
     trace_sample_rate=disabled
+    engine_prometheus_scope=not-collected-native-always-on
     ;;
   clean)
     enable_tensorboard=1
     trace_sample_rate="${SEARCH_R1_TRACE_SAMPLE_RATE:-${default_trace_sample_rate}}"
+    engine_prometheus_scope=sglang-router-and-engine-http-servers
     ;;
   profile)
     enable_tensorboard=1
     trace_sample_rate="${SEARCH_R1_TRACE_SAMPLE_RATE:-1.0}"
+    engine_prometheus_scope=sglang-router-and-engine-http-servers
     ;;
   *)
     echo "SEARCH_R1_OBSERVABILITY_MODE must be baseline, clean, or profile." >&2
@@ -238,6 +241,7 @@ export PYTHONUNBUFFERED=1
     "$([[ "${save_debug_rollouts}" == 1 ]] && echo campaign-only || echo disabled)"
   printf 'trace_path=%s\n' "${AI_SEARCH_TRACE_PATH:-disabled}"
   printf 'trace_sample_rate=%s\n' "${AI_SEARCH_TRACE_SAMPLE_RATE:-disabled}"
+  printf 'engine_prometheus_scope=%s\n' "${engine_prometheus_scope}"
   printf 'tensorboard_dir=%s\n' "${TENSORBOARD_DIR:-disabled}"
   printf 'swanlab_source=%s\n' "$([[ "${enable_tensorboard}" == 1 ]] && echo post-run-tensorboard-conversion || echo disabled)"
   printf 'nsys_executable=%s\nnsys_version=%s\n' "${nsys_executable}" "${nsys_version}"

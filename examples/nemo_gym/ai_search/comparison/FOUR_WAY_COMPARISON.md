@@ -250,7 +250,8 @@ whether retrieval is on the critical path or overlapped with other rollouts.
 2. **Nsight Systems** provides CUDA, NCCL, NVTX, CPU scheduling, memory, and
    kernel gaps for a short steady-state window.
 3. **Prometheus** provides bounded-cardinality request, queue, active-batch,
-   latency, and error series from rollout and retrieval services.
+   latency, KV-cache, preemption, token, and error series from rollout and
+   retrieval services where the native engine exports them.
 4. **Trajectory JSONL spans** join model calls, actions, queues, HTTP batches,
    and E5 stages by trajectory and provider batch IDs.
 
@@ -271,6 +272,17 @@ clean enables the framework's local metric sink and the run-mode sampling rate;
 profile is a separate run with a 100% default trajectory sample rate and Nsight
 capture. The same mode names therefore have the same measurement meaning even
 when a framework's native logger or profiler implementation differs.
+
+Prometheus coverage is also recorded rather than assumed. In clean and profile
+modes, NeMo RL exposes and scrapes every native vLLM HTTP server, current veRL
+enables vLLM statistics and scrapes every server announced by its
+`LLMServerManager`, and slime scrapes both the SGLang router and every announced
+SGLang engine. slime enables SGLang metric emission natively even in baseline,
+so its manifest records that emission as always on while the external scraper
+remains off. The original Search-R1 fork exports the added driver/step metrics,
+but its embedded old vLLM engine has no separate HTTP metrics endpoint in this
+runtime; engine-level Prometheus coverage is therefore marked `missing`, not
+zero. All four runs separately scrape the shared E5 service.
 
 The Nsight process coverage is recorded, not assumed. NeMo RL and the patched
 original Search-R1 cover their policy and rollout workers. Current veRL's

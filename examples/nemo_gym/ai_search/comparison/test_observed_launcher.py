@@ -21,12 +21,25 @@ def test_local_swanlab_installs_matching_dashboard_extra() -> None:
 
 
 def test_baseline_mode_disables_optional_observers() -> None:
-    launcher = (
-        Path(__file__).parents[1] / "run_ai_search_observed.sh"
-    ).read_text()
+    launcher = (Path(__file__).parents[1] / "run_ai_search_observed.sh").read_text()
 
     assert "baseline)" in launcher
     assert "logger.swanlab_enabled=false" in launcher
     assert "logger.monitor_gpus=false" in launcher
+    assert "++policy.generation.vllm_cfg.enable_vllm_metrics_logger=false" in launcher
     assert "unset AI_SEARCH_TRACE_PATH AI_SEARCH_TRACE_SAMPLE_RATE" in launcher
     assert "unset SWANLAB_MODE SWANLAB_LOGDIR" in launcher
+
+
+def test_observed_modes_enable_native_vllm_metrics() -> None:
+    ai_search_dir = Path(__file__).parents[1]
+    launcher = (ai_search_dir / "run_ai_search_observed.sh").read_text()
+    worker = (
+        ai_search_dir.parents[2] / "nemo_rl/models/generation/vllm/vllm_worker_async.py"
+    ).read_text()
+
+    assert "++policy.generation.vllm_cfg.enable_vllm_metrics_logger=true" in launcher
+    assert "++policy.generation.vllm_cfg.vllm_metrics_logger_interval=0.5" in launcher
+    assert "vllm-http-servers" in launcher
+    assert '@app.get("/metrics", include_in_schema=False)' in worker
+    assert "content=generate_latest()" in worker
