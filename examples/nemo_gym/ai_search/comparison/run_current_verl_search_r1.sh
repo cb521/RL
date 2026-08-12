@@ -31,7 +31,10 @@ case "${run_mode}" in
   smoke)
     prompts_per_step=8
     total_steps=1
-    ppo_mini_batch_size=40
+    # Current veRL expresses this value in prompts and multiplies it by
+    # rollout.n internally. Eight prompts therefore become the same 40
+    # trajectory global mini-batch used by the other launchers.
+    ppo_mini_batch_size=8
     ppo_micro_batch_size_per_gpu=5
     log_prob_micro_batch_size_per_gpu=1
     agent_workers=40
@@ -43,7 +46,7 @@ case "${run_mode}" in
   performance)
     prompts_per_step=8
     total_steps=4
-    ppo_mini_batch_size=40
+    ppo_mini_batch_size=8
     ppo_micro_batch_size_per_gpu=5
     log_prob_micro_batch_size_per_gpu=1
     agent_workers=40
@@ -244,7 +247,7 @@ export PYTHONUNBUFFERED=1
   printf 'ppo_micro_batch_size_per_gpu=%s\n' "${ppo_micro_batch_size_per_gpu}"
   printf 'log_prob_micro_batch_size_per_gpu=%s\n' "${log_prob_micro_batch_size_per_gpu}"
   printf 'optimizer_updates_per_outer_step=%s\n' \
-    "$(((prompts_per_step * 5) / ppo_mini_batch_size))"
+    "$((prompts_per_step / ppo_mini_batch_size))"
   printf 'total_steps=%s\n' "${total_steps}"
   printf 'optimizer=AdamW\noptimizer_lr=1e-6\noptimizer_weight_decay=0.01\n'
   printf 'optimizer_betas=0.9,0.999\noptimizer_epsilon=1e-8\n'

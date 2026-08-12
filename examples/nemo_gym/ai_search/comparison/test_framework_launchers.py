@@ -252,7 +252,7 @@ def test_current_verl_launcher_freezes_aligned_protocol() -> None:
         "expected_train_sha256=64325c44a1ac79c53fc70ad36551e34b4d2ac0fa79cf0d3cca1c4d244bdeaa39",
         "expected_eval_sha256=7c7d10d003dce8b0c6c2c0c4177974d0767cd2a380123faf6ee51473bc8e2461",
         "prompts_per_step=8\n    total_steps=4",
-        "ppo_mini_batch_size=40\n    ppo_micro_batch_size_per_gpu=5",
+        "ppo_mini_batch_size=8\n    ppo_micro_batch_size_per_gpu=5",
         "prompts_per_step=512\n    total_steps=500",
         "ppo_micro_batch_size_per_gpu=8",
         "log_prob_micro_batch_size_per_gpu=16",
@@ -307,6 +307,7 @@ def test_current_verl_launcher_freezes_aligned_protocol() -> None:
         assert fragment in source
     assert 'if [[ "${num_gpus}" != "8" ]]' in source
     assert "optimizer_updates_per_outer_step=%s" in source
+    assert '"$((prompts_per_step / ppo_mini_batch_size))"' in source
 
 
 def test_current_verl_patch_is_frozen_and_measurement_only() -> None:
