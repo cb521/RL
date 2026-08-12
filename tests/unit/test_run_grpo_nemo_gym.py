@@ -24,14 +24,15 @@ def test_shutdown_runtime_closes_every_component(mock_ray) -> None:
     nemo_gym.shutdown.remote.return_value = shutdown_ref
     policy = MagicMock()
     policy_generation = MagicMock()
-    cluster = MagicMock()
+    train_cluster = MagicMock()
+    inference_cluster = MagicMock()
     logger = MagicMock()
 
     shutdown_runtime(
         nemo_gym=nemo_gym,
         policy=policy,
         policy_generation=policy_generation,
-        cluster=cluster,
+        cluster=(train_cluster, inference_cluster),
         logger=logger,
     )
 
@@ -40,7 +41,8 @@ def test_shutdown_runtime_closes_every_component(mock_ray) -> None:
     mock_ray.get.assert_called_once_with(shutdown_ref, timeout=10)
     policy_generation.shutdown.assert_called_once_with()
     policy.shutdown.assert_called_once_with()
-    cluster.shutdown.assert_called_once_with()
+    train_cluster.shutdown.assert_called_once_with()
+    inference_cluster.shutdown.assert_called_once_with()
     mock_ray.shutdown.assert_called_once_with()
 
 
@@ -57,7 +59,7 @@ def test_shutdown_runtime_continues_after_cleanup_error(mock_ray) -> None:
         nemo_gym=nemo_gym,
         policy=policy,
         policy_generation=policy_generation,
-        cluster=cluster,
+        cluster=(cluster, cluster),
         logger=logger,
     )
 

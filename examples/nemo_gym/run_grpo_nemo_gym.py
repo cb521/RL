@@ -76,25 +76,32 @@ def shutdown_runtime(
     logger: Logger,
 ) -> None:
     """Close logging and Ray actors before Python interpreter teardown."""
-    cleanup_steps = (
-        ("logger", logger.finish),
-        (
-            "NeMo Gym environment",
-            lambda: ray.get(nemo_gym.shutdown.remote(), timeout=10),
-        ),
-        ("generation workers", policy_generation.shutdown),
-        (
-            "policy workers",
-            policy.shutdown if policy is not policy_generation else lambda: None,
-        ),
-        ("virtual cluster", cluster.shutdown),
-        ("Ray", ray.shutdown),
-    )
-    for name, cleanup in cleanup_steps:
+    def cleanup(name, action) -> None:
         try:
-            cleanup()
+            action()
         except Exception as error:
             print(f"Warning: Failed to shut down {name}: {error}", flush=True)
+
+    cleanup("logger", logger.finish)
+    cleanup(
+        "NeMo Gym environment",
+        lambda: ray.get(nemo_gym.shutdown.remote(), timeout=10),
+    )
+    cleanup("generation workers", policy_generation.shutdown)
+    if policy is not policy_generation:
+        cleanup("policy workers", policy.shutdown)
+
+    clusters = cluster if isinstance(cluster, tuple) else (cluster,)
+    seen_cluster_ids: set[int] = set()
+    for index, runtime_cluster in enumerate(clusters):
+        if id(runtime_cluster) in seen_cluster_ids:
+            continue
+        seen_cluster_ids.add(id(runtime_cluster))
+        cleanup(
+            f"virtual cluster {index}",
+            lambda runtime_cluster=runtime_cluster: runtime_cluster.shutdown(),
+        )
+    cleanup("Ray", ray.shutdown)
 
 
 # These types are directly imported from grpo_train since if something about the architecture changes we want to immediately fail.
