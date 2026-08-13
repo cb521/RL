@@ -17,6 +17,7 @@ observability_mode="${SEARCH_R1_OBSERVABILITY_MODE:-clean}"
 seed="${SEARCH_R1_SEED:-42}"
 num_gpus="${SEARCH_R1_NUM_GPUS:-8}"
 allow_nonformal_preflight="${SEARCH_R1_ALLOW_NONFORMAL_PREFLIGHT:-0}"
+fast_iteration="${SEARCH_R1_FAST_ITERATION:-0}"
 
 expected_model_revision=d149729398750b98c0af14eb82c78cfe92750796
 expected_train_sha256=9904042da053be8e7fa275453c9221324d24aadb6f67323d040e6016da9bfaff
@@ -39,6 +40,9 @@ case "${run_mode}" in
   performance)
     prompts_per_step=8
     total_steps=4
+    if [[ "${fast_iteration}" == "1" ]]; then
+      total_steps=2
+    fi
     train_global_batch_size=40
     train_micro_batch_size=5
     logprob_batch_size=1
@@ -62,6 +66,39 @@ case "${run_mode}" in
     ;;
   *)
     echo "SEARCH_R1_RUN_MODE must be smoke, performance, or campaign, not ${run_mode}." >&2
+    exit 1
+    ;;
+esac
+
+case "${fast_iteration}" in
+  0)
+    iteration_mode=full
+    case "${run_mode}" in
+      smoke)
+        warmup_steps=0
+        measured_steps=1
+        ;;
+      performance)
+        warmup_steps=1
+        measured_steps=2,3,4
+        ;;
+      campaign)
+        warmup_steps=0
+        measured_steps=1-500
+        ;;
+    esac
+    ;;
+  1)
+    if [[ "${run_mode}" != performance ]]; then
+      echo "SEARCH_R1_FAST_ITERATION=1 is only valid for performance runs." >&2
+      exit 1
+    fi
+    iteration_mode=fast-screening
+    warmup_steps=1
+    measured_steps=2
+    ;;
+  *)
+    echo "SEARCH_R1_FAST_ITERATION must be 0 or 1, not ${fast_iteration}." >&2
     exit 1
     ;;
 esac
@@ -159,9 +196,24 @@ export NEMO_RL_RAY_DASHBOARD=0
 export TOKENIZERS_PARALLELISM=false
 
 nemo_commit=$(git -C "${nemo_root}" rev-parse HEAD)
+nsys_profile_step_range=disabled
+nsys_scope=disabled
+nsys_rollout_engine_scope=disabled
+if [[ "${observability_mode}" == profile ]]; then
+  nsys_profile_step_range="${NRL_NSYS_PROFILE_STEP_RANGE:-2:3}"
+  nsys_scope="${NRL_NSYS_WORKER_PATTERNS:-policy-and-vllm-worker-processes-step-2}"
+  if [[ -z "${NRL_NSYS_WORKER_PATTERNS:-}" \
+    || "${NRL_NSYS_WORKER_PATTERNS}" == *vllm* ]]; then
+    nsys_rollout_engine_scope=covered
+  else
+    nsys_rollout_engine_scope=not-covered-targeted-worker-profile
+  fi
+fi
 {
   printf 'framework=nemo-rl\n'
   printf 'run_mode=%s\nobservability_mode=%s\n' "${run_mode}" "${observability_mode}"
+  printf 'iteration_mode=%s\nwarmup_steps=%s\nmeasured_steps=%s\n' \
+    "${iteration_mode}" "${warmup_steps}" "${measured_steps}"
   printf 'source_commit=%s\n' "${nemo_commit}"
   printf 'model_revision=%s\n' "${expected_model_revision}"
   printf 'train_sha256=%s\neval_sha256=%s\n' "${expected_train_sha256}" "${expected_eval_sha256}"
@@ -182,9 +234,9 @@ nemo_commit=$(git -C "${nemo_root}" rev-parse HEAD)
   printf 'trace_sample_rate=%s\n' "${trace_sample_rate}"
   printf 'engine_prometheus_scope=%s\n' \
     "$([[ "${observability_mode}" == baseline ]] && echo disabled || echo vllm-http-servers)"
-  printf 'nsys_profile_step_range=%s\n' "$([[ "${observability_mode}" == profile ]] && echo 2:3 || echo disabled)"
-  printf 'nsys_scope=%s\n' "$([[ "${observability_mode}" == profile ]] && echo policy-and-vllm-worker-processes-step-2 || echo disabled)"
-  printf 'nsys_rollout_engine_scope=%s\n' "$([[ "${observability_mode}" == profile ]] && echo covered || echo disabled)"
+  printf 'nsys_profile_step_range=%s\n' "${nsys_profile_step_range}"
+  printf 'nsys_scope=%s\n' "${nsys_scope}"
+  printf 'nsys_rollout_engine_scope=%s\n' "${nsys_rollout_engine_scope}"
   printf 'formal_parity_result=%s\n' "$([[ "${run_mode}" == campaign && "${observability_mode}" == clean ]] && echo candidate || echo false)"
 } > "${output_dir}/manifest.txt"
 

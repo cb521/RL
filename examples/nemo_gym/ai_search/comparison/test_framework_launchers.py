@@ -108,6 +108,28 @@ def test_nemo_observed_launcher_does_not_repeat_nsys_sample_option() -> None:
     assert "sample" not in default_options
 
 
+def test_nemo_fast_iteration_keeps_workload_and_measures_only_step_two() -> None:
+    source = _read(NEMO_SEARCH_R1_LAUNCHER)
+    for fragment in (
+        'fast_iteration="${SEARCH_R1_FAST_ITERATION:-0}"',
+        'if [[ "${fast_iteration}" == "1" ]]',
+        "total_steps=2",
+        "iteration_mode=fast-screening",
+        "measured_steps=2",
+        "SEARCH_R1_FAST_ITERATION=1 is only valid for performance runs.",
+        "SEARCH_R1_FAST_ITERATION must be 0 or 1",
+        "printf 'iteration_mode=%s\\nwarmup_steps=%s\\nmeasured_steps=%s\\n'",
+        '${NRL_NSYS_PROFILE_STEP_RANGE:-2:3}',
+    ):
+        assert fragment in source
+
+    # Fast screening changes only the number of outer steps. The frozen
+    # per-step workload remains eight prompts with five trajectories each.
+    assert "prompts_per_step=8" in source
+    assert "export AI_SEARCH_NUM_GENERATIONS=5" in source
+    assert "train_global_batch_size=40" in source
+
+
 def test_campaign_launchers_save_only_midpoint_and_final_checkpoints() -> None:
     assert "checkpointing.save_period=250" in _read(NEMO_SEARCH_R1_LAUNCHER)
     assert "save_freq=250" in _read(ORIGINAL_SEARCH_R1_LAUNCHER)
