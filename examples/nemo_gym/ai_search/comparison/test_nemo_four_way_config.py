@@ -51,11 +51,34 @@ def test_campaign_config_preserves_strict_optimizer_and_order() -> None:
     assert config["policy"]["dtensor_cfg"]["offload_model_during_refit"] is False
     generation = config["policy"]["generation"]
     assert generation["vllm_cfg"]["enforce_eager"] is False
+    assert generation["vllm_cfg"]["sleep_level"] == 2
+    assert generation["vllm_cfg"]["gpu_memory_utilization"] == 0.6
+    assert generation["vllm_kwargs"]["max_num_batched_tokens"] == 8192
     assert generation["vllm_kwargs"]["compilation_config"] == {
         "backend": "eager",
         "cudagraph_mode": "FULL_DECODE_ONLY",
         "cudagraph_capture_sizes": list(range(1, 11)),
     }
+
+
+def test_resident_performance_overrides_are_explicit() -> None:
+    config = _resolved(
+        [
+            "policy.generation.vllm_cfg.sleep_level=0",
+            "policy.generation.vllm_cfg.gpu_memory_utilization=0.13",
+        ]
+    )
+    generation = config["policy"]["generation"]
+    assert generation["vllm_cfg"]["sleep_level"] == 0
+    assert generation["vllm_cfg"]["gpu_memory_utilization"] == 0.13
+    assert generation["vllm_kwargs"]["max_num_batched_tokens"] == 8192
+
+
+def test_offload_performance_override_is_explicit() -> None:
+    config = _resolved(["policy.generation.vllm_cfg.sleep_level=1"])
+    generation = config["policy"]["generation"]
+    assert generation["vllm_cfg"]["sleep_level"] == 1
+    assert generation["vllm_cfg"]["gpu_memory_utilization"] == 0.6
 
 
 def test_performance_overrides_resolve_to_one_update_per_outer_step() -> None:

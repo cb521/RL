@@ -18,7 +18,16 @@ policy:
       # trajectories. Allow vLLM to replay captured decode graphs instead of
       # launching the complete eager kernel sequence for every generated token.
       enforce_eager: false
+      # Match the current veRL configuration used by this comparison: discard
+      # stale rollout weights and KV cache after generation, then install the
+      # newly trained policy before the next rollout. The launcher exposes
+      # explicit offload and resident alternatives for memory/performance tests.
+      sleep_level: 2
     vllm_kwargs:
+      # Search-R1 follow-up turns prefill the prior answer plus retrieved text.
+      # Match current veRL's 8K scheduler budget so those prefills are not
+      # unnecessarily split across four 2K engine iterations.
+      max_num_batched_tokens: 8192
       compilation_config:
         # Isolate CUDA Graph replay first: retain vLLM's native eager kernels
         # and do not mix an Inductor kernel change into this experiment.

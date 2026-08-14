@@ -82,6 +82,10 @@ def test_nemo_search_r1_launcher_freezes_aligned_protocol() -> None:
         "engine_prometheus_scope",
         "vllm-http-servers",
         "policy-and-vllm-worker-processes-step-2",
+        "printf 'nemo_runtime_profile=%s\\n'",
+        "printf 'vllm_sleep_level=%s\\n'",
+        "printf 'vllm_gpu_memory_utilization=%s\\n'",
+        "printf 'vllm_max_num_batched_tokens=8192\\n'",
         'health_url="${retriever_url%/retrieve}/healthz"',
         "--retry 12 --retry-delay 5 --retry-max-time 120 --retry-all-errors",
         "The strict NeMo four-way launcher does not accept positional overrides.",
@@ -95,15 +99,36 @@ def test_nemo_search_r1_launcher_freezes_aligned_protocol() -> None:
     assert config["policy"]["generation"] == {
         "val_temperature": 0.0,
         "val_top_p": 1.0,
-        "vllm_cfg": {"enforce_eager": False},
+        "vllm_cfg": {"enforce_eager": False, "sleep_level": 2},
         "vllm_kwargs": {
+            "max_num_batched_tokens": 8192,
             "compilation_config": {
                 "backend": "eager",
                 "cudagraph_mode": "FULL_DECODE_ONLY",
                 "cudagraph_capture_sizes": list(range(1, 11)),
-            }
+            },
         },
     }
+
+
+def test_nemo_runtime_profiles_make_memory_tradeoff_explicit() -> None:
+    source = _read(NEMO_SEARCH_R1_LAUNCHER)
+    for fragment in (
+        'runtime_profile="${SEARCH_R1_NEMO_RUNTIME_PROFILE:-discard}"',
+        "discard)",
+        "offload)",
+        "resident)",
+        '[[ "${run_mode}" != performance || "${num_gpus}" != "4" ]]',
+        "SEARCH_R1_NEMO_RUNTIME_PROFILE=resident is restricted to four-GPU performance diagnostics.",
+        "SEARCH_R1_NEMO_RUNTIME_PROFILE must be discard, offload, or resident",
+        "vllm_sleep_level=2",
+        "vllm_sleep_level=1",
+        "vllm_sleep_level=0",
+        "vllm_gpu_memory_utilization=0.13",
+        'command+=("policy.generation.vllm_cfg.sleep_level=${vllm_sleep_level}")',
+        "policy.generation.vllm_cfg.gpu_memory_utilization=0.13",
+    ):
+        assert fragment in source
 
 
 def test_nemo_observed_launcher_does_not_repeat_nsys_sample_option() -> None:
@@ -128,7 +153,7 @@ def test_nemo_fast_iteration_keeps_workload_and_measures_only_step_two() -> None
         "SEARCH_R1_FAST_ITERATION=1 is only valid for performance runs.",
         "SEARCH_R1_FAST_ITERATION must be 0 or 1",
         "printf 'iteration_mode=%s\\nwarmup_steps=%s\\nmeasured_steps=%s\\n'",
-        '${NRL_NSYS_PROFILE_STEP_RANGE:-2:3}',
+        "${NRL_NSYS_PROFILE_STEP_RANGE:-2:3}",
     ):
         assert fragment in source
 
@@ -139,7 +164,9 @@ def test_nemo_fast_iteration_keeps_workload_and_measures_only_step_two() -> None
     assert "train_global_batch_size=40" in source
 
 
-def test_current_verl_fast_iteration_keeps_workload_and_measures_only_step_two() -> None:
+def test_current_verl_fast_iteration_keeps_workload_and_measures_only_step_two() -> (
+    None
+):
     source = _read(CURRENT_VERL_LAUNCHER)
     for fragment in (
         'fast_iteration="${SEARCH_R1_FAST_ITERATION:-0}"',
@@ -163,29 +190,27 @@ def test_controlled_work_mode_freezes_outputs_and_records_exact_work() -> None:
         source = _read(launcher)
         for fragment in (
             'workload_mode="${SEARCH_R1_WORKLOAD_MODE:-training}"',
-            'optimizer_lr=0.0',
-            'rollout_request_temperature=0.0',
-            'weights_frozen=true',
-            'trace_sample_rate=1.0',
+            "optimizer_lr=0.0",
+            "rollout_request_temperature=0.0",
+            "weights_frozen=true",
+            "trace_sample_rate=1.0",
             'export SEARCH_R1_WORKLOAD_MODE="${workload_mode}"',
-            'printf \'workload_mode=%s\\nprompt_encoding=%s\\n\'',
-            'printf \'rollout_request_temperature=%s\\ntraining_logprob_temperature=1.0\\n\'',
-            'printf \'weights_frozen_by_zero_lr=%s\\n\'',
-            'SEARCH_R1_WORKLOAD_MODE=controlled requires a clean performance run.',
-            'SEARCH_R1_WORKLOAD_MODE must be training or controlled',
-            'SEARCH_R1_CONTROLLED_DATA_MANIFEST is required for controlled work.',
-            'expected_controlled_manifest_sha256=09b4fa8a7127873c9083ff7dfa736ff087ad2c0d6b570dd6349d7bbfe6db1003',
-            'controlled_semantic_rows_sha256=281e6efdf2a9a3d083010f68d82e20d6bd8469976ee1fffdcf6a0616e158b75d',
+            "printf 'workload_mode=%s\\nprompt_encoding=%s\\n'",
+            "printf 'rollout_request_temperature=%s\\ntraining_logprob_temperature=1.0\\n'",
+            "printf 'weights_frozen_by_zero_lr=%s\\n'",
+            "SEARCH_R1_WORKLOAD_MODE=controlled requires a clean performance run.",
+            "SEARCH_R1_WORKLOAD_MODE must be training or controlled",
+            "SEARCH_R1_CONTROLLED_DATA_MANIFEST is required for controlled work.",
+            "expected_controlled_manifest_sha256=09b4fa8a7127873c9083ff7dfa736ff087ad2c0d6b570dd6349d7bbfe6db1003",
+            "controlled_semantic_rows_sha256=281e6efdf2a9a3d083010f68d82e20d6bd8469976ee1fffdcf6a0616e158b75d",
             "printf 'controlled_data_manifest_sha256=%s\\n'",
         ):
             assert fragment in source
 
-    assert 'prompt_encoding=search-r1-content-concat' in _read(
-        NEMO_SEARCH_R1_LAUNCHER
-    )
+    assert "prompt_encoding=search-r1-content-concat" in _read(NEMO_SEARCH_R1_LAUNCHER)
     current_source = _read(CURRENT_VERL_LAUNCHER)
-    assert 'prompt_encoding=qwen-chat-template' in current_source
-    assert 'prompt_encoding=search-r1-content-concat' in current_source
+    assert "prompt_encoding=qwen-chat-template" in current_source
+    assert "prompt_encoding=search-r1-content-concat" in current_source
     assert "filter_overlong_prompts=true" in current_source
     assert "filter_overlong_prompts=false" in current_source
     assert '"data.filter_overlong_prompts=${filter_overlong_prompts}"' in current_source
@@ -292,7 +317,7 @@ def test_original_search_r1_launcher_freezes_aligned_protocol() -> None:
         "SEARCH_R1_NSYS_PROFILE_STEP=2",
         "SEARCH_R1_NSYS_OUTPUT_PREFIX=original_search_r1_worker_%p",
         'SEARCH_R1_RAY_TMPDIR="${SEARCH_R1_RAY_TMPDIR:-${output_dir}/ray}"',
-        'if (( ${#SEARCH_R1_RAY_TMPDIR} > 32 )); then',
+        "if (( ${#SEARCH_R1_RAY_TMPDIR} > 32 )); then",
         "actor-rollout-and-reference-worker-processes-full-step",
         "max_turns=4",
         "retriever.topk=3",
@@ -414,7 +439,7 @@ def test_current_verl_launcher_freezes_aligned_protocol() -> None:
         "actor_rollout_ref.actor.profiler.enable=true",
         "actor_rollout_ref.ref.profiler.enable=true",
         'profile_ray_tmpdir="${SEARCH_R1_RAY_TMPDIR:-${output_dir}/ray}"',
-        'if (( ${#profile_ray_tmpdir} > 32 )); then',
+        "if (( ${#profile_ray_tmpdir} > 32 )); then",
         '"+ray_kwargs.ray_init._temp_dir=${profile_ray_tmpdir}"',
         "actor-and-reference-worker-processes-full-step",
         "nsys_rollout_engine_scope",
@@ -502,7 +527,7 @@ def test_slime_launcher_freezes_aligned_protocol() -> None:
         "The strict slime launcher does not accept positional overrides.",
         'observability_mode="${SEARCH_R1_OBSERVABILITY_MODE:-clean}"',
         "SEARCH_R1_NSYS_PROFILE_ROLLOUT_ID=3",
-        'export NSYS_NVTX_PROFILER_REGISTER_ONLY=0',
+        "export NSYS_NVTX_PROFILER_REGISTER_ONLY=0",
         '"NSYS_NVTX_PROFILER_REGISTER_ONLY":"0"',
         '"capture-range":"nvtx"',
         '"nvtx-capture":"search_r1_outer_step"',
@@ -534,7 +559,7 @@ def test_slime_launcher_freezes_aligned_protocol() -> None:
         "engine_prometheus_scope=not-collected-native-always-on",
         "engine_prometheus_scope=sglang-router-and-engine-http-servers",
         'ray_tmpdir="${SEARCH_R1_RAY_TMPDIR:-${output_dir}/ray}"',
-        'if (( ${#ray_tmpdir} > 32 )); then',
+        "if (( ${#ray_tmpdir} > 32 )); then",
         '--temp-dir "${ray_tmpdir}"',
     )
     for fragment in required_fragments:
