@@ -371,6 +371,12 @@ class DTensorPolicyWorkerV2Impl(
             self.sampling_params,
             _runtime_is_reward_model,  # Duplicate, already set as _is_reward_model
         ) = runtime_config
+        self.offload_optimizer_during_refit = config["dtensor_cfg"].get(
+            "offload_optimizer_during_refit", True
+        )
+        self.offload_model_during_refit = config["dtensor_cfg"].get(
+            "offload_model_during_refit", True
+        )
 
         # Rollout topology constant for SGLang colocated refit: set once via
         # ``set_rollout_num_gpus_per_engine`` after the SGLang generation
@@ -1260,9 +1266,9 @@ class DTensorPolicyWorkerV2Impl(
     @torch.no_grad()
     @wrap_with_nvtx_name("dtensor_policy_worker_v2/offload_before_refit")
     def offload_before_refit(self) -> None:
-        """Offload the optimizer to the CPU."""
+        """Optionally offload optimizer state before colocated weight refit."""
         torch.randn(1).cuda()  # wake up torch allocator
-        if self.optimizer is not None:
+        if self.optimizer is not None and self.offload_optimizer_during_refit:
             self.move_optimizer_to_device("cpu")
 
         gc.collect()
@@ -1271,8 +1277,9 @@ class DTensorPolicyWorkerV2Impl(
     @torch.no_grad()
     @wrap_with_nvtx_name("dtensor_policy_worker_v2/offload_after_refit")
     def offload_after_refit(self) -> None:
-        """Offload as much as possible on the CPU."""
-        self.model = self.move_to_cpu(self.model)
+        """Offload model weights and, when configured, optimizer state."""
+        if self.offload_model_during_refit:
+            self.model = self.move_to_cpu(self.model)
         self.model.eval()
         torch.randn(1).cuda()  # wake up torch allocator
         self.offload_before_refit()  # rerun the old offload function
@@ -1281,7 +1288,7 @@ class DTensorPolicyWorkerV2Impl(
         allocated = torch.cuda.memory_allocated() / (1024**3)  # Convert to GB
         reserved = torch.cuda.memory_reserved() / (1024**3)  # Convert to GB
         print(
-            f"GPU Memory after optimizer offload: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved"
+            f"GPU Memory after refit offload: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved"
         )
 
     def move_optimizer_to_device(self, device: str | torch.device) -> None:

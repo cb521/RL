@@ -47,6 +47,8 @@ def test_campaign_config_preserves_strict_optimizer_and_order() -> None:
     }
     assert config["policy"]["scheduler"][0]["kwargs"]["total_iters"] == 142
     assert config["policy"]["generation"]["val_temperature"] == 0.0
+    assert config["policy"]["dtensor_cfg"]["offload_optimizer_during_refit"] is False
+    assert config["policy"]["dtensor_cfg"]["offload_model_during_refit"] is False
 
 
 def test_performance_overrides_resolve_to_one_update_per_outer_step() -> None:

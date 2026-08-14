@@ -46,9 +46,18 @@ except ImportError:
 class _FakeTrainableModel:
     def __init__(self):
         self.train_called = False
+        self.eval_called = False
 
     def train(self):
         self.train_called = True
+
+    def eval(self):
+        self.eval_called = True
+
+
+class _FakeCudaWakeTensor:
+    def cuda(self):
+        return self
 
 
 @pytest.mark.automodel
@@ -72,6 +81,58 @@ def test_dtensor_v2_prepare_for_training_restores_optimizer(monkeypatch):
 
     assert model.train_called
     assert restored_devices == ["cuda"]
+
+
+@pytest.mark.automodel
+@pytest.mark.skipif(not NEMO_AUTOMODEL_AVAILABLE, reason="nemo_automodel not available")
+@pytest.mark.parametrize(
+    ("offload_optimizer_during_refit", "expected_devices"),
+    [(True, ["cpu"]), (False, [])],
+)
+def test_dtensor_v2_refit_optimizer_offload_is_configurable(
+    monkeypatch, offload_optimizer_during_refit, expected_devices
+):
+    worker = object.__new__(DTensorPolicyWorkerV2Impl)
+    moved_devices = []
+    worker.optimizer = object()
+    worker.offload_optimizer_during_refit = offload_optimizer_during_refit
+    worker.move_optimizer_to_device = lambda device: moved_devices.append(device)
+
+    monkeypatch.setattr(torch, "randn", lambda *_args, **_kwargs: _FakeCudaWakeTensor())
+    monkeypatch.setattr(torch.cuda.nvtx, "range_push", lambda _name: None)
+    monkeypatch.setattr(torch.cuda.nvtx, "range_pop", lambda: None)
+    monkeypatch.setattr(torch.cuda, "empty_cache", lambda: None)
+
+    DTensorPolicyWorkerV2Impl.offload_before_refit(worker)
+
+    assert moved_devices == expected_devices
+
+
+@pytest.mark.automodel
+@pytest.mark.skipif(not NEMO_AUTOMODEL_AVAILABLE, reason="nemo_automodel not available")
+@pytest.mark.parametrize("offload_model_during_refit", [True, False])
+def test_dtensor_v2_refit_model_offload_is_configurable(
+    monkeypatch, offload_model_during_refit
+):
+    worker = object.__new__(DTensorPolicyWorkerV2Impl)
+    model = _FakeTrainableModel()
+    worker.model = model
+    worker.offload_model_during_refit = offload_model_during_refit
+    worker.move_to_cpu = MagicMock(side_effect=lambda value: value)
+
+    monkeypatch.setattr(
+        DTensorPolicyWorkerV2Impl, "offload_before_refit", lambda _worker: None
+    )
+    monkeypatch.setattr(torch, "randn", lambda *_args, **_kwargs: _FakeCudaWakeTensor())
+    monkeypatch.setattr(torch.cuda.nvtx, "range_push", lambda _name: None)
+    monkeypatch.setattr(torch.cuda.nvtx, "range_pop", lambda: None)
+    monkeypatch.setattr(torch.cuda, "memory_allocated", lambda: 0)
+    monkeypatch.setattr(torch.cuda, "memory_reserved", lambda: 0)
+
+    DTensorPolicyWorkerV2Impl.offload_after_refit(worker)
+
+    assert worker.move_to_cpu.call_count == int(offload_model_during_refit)
+    assert model.eval_called
 
 
 @pytest.mark.automodel

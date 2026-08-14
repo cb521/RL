@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import pprint
+from unittest.mock import MagicMock
 
 import pytest
 import ray
@@ -33,9 +34,18 @@ from tests.unit.test_utils import SimpleLossFn
 class _FakeTrainableModel:
     def __init__(self):
         self.train_called = False
+        self.eval_called = False
 
     def train(self):
         self.train_called = True
+
+    def eval(self):
+        self.eval_called = True
+
+
+class _FakeCudaWakeTensor:
+    def cuda(self):
+        return self
 
 
 def test_dtensor_prepare_for_training_restores_optimizer(monkeypatch):
@@ -61,6 +71,68 @@ def test_dtensor_prepare_for_training_restores_optimizer(monkeypatch):
 
     assert model.train_called
     assert restored_devices == ["cuda"]
+
+
+@pytest.mark.parametrize(
+    ("offload_optimizer_during_refit", "expected_devices"),
+    [(True, ["cpu"]), (False, [])],
+)
+def test_dtensor_refit_optimizer_offload_is_configurable(
+    monkeypatch, offload_optimizer_during_refit, expected_devices
+):
+    from nemo_rl.models.policy.workers.dtensor_policy_worker import (
+        DTensorPolicyWorkerImpl,
+    )
+
+    worker = object.__new__(DTensorPolicyWorkerImpl)
+    moved_devices = []
+    worker.optimizer = object()
+    worker.offload_optimizer_during_refit = offload_optimizer_during_refit
+    worker.move_optimizer_to_device = lambda device: moved_devices.append(device)
+    worker.timer = MagicMock()
+
+    monkeypatch.setattr(torch, "randn", lambda *_args, **_kwargs: _FakeCudaWakeTensor())
+    monkeypatch.setattr(torch.cuda.nvtx, "range_push", lambda _name: None)
+    monkeypatch.setattr(torch.cuda.nvtx, "range_pop", lambda: None)
+    monkeypatch.setattr(torch.cuda, "empty_cache", lambda: None)
+
+    DTensorPolicyWorkerImpl.offload_before_refit(worker)
+
+    assert moved_devices == expected_devices
+    worker.timer.start.assert_called_once_with("offload_before_refit")
+    worker.timer.stop.assert_called_once_with("offload_before_refit")
+
+
+@pytest.mark.parametrize("offload_model_during_refit", [True, False])
+def test_dtensor_refit_model_offload_is_configurable(
+    monkeypatch, offload_model_during_refit
+):
+    from nemo_rl.models.policy.workers.dtensor_policy_worker import (
+        DTensorPolicyWorkerImpl,
+    )
+
+    worker = object.__new__(DTensorPolicyWorkerImpl)
+    model = _FakeTrainableModel()
+    worker.model = model
+    worker.offload_model_during_refit = offload_model_during_refit
+    worker.move_to_cpu = MagicMock(side_effect=lambda value: value)
+    worker.timer = MagicMock()
+
+    monkeypatch.setattr(
+        DTensorPolicyWorkerImpl, "offload_before_refit", lambda _worker: None
+    )
+    monkeypatch.setattr(torch, "randn", lambda *_args, **_kwargs: _FakeCudaWakeTensor())
+    monkeypatch.setattr(torch.cuda.nvtx, "range_push", lambda _name: None)
+    monkeypatch.setattr(torch.cuda.nvtx, "range_pop", lambda: None)
+    monkeypatch.setattr(torch.cuda, "memory_allocated", lambda: 0)
+    monkeypatch.setattr(torch.cuda, "memory_reserved", lambda: 0)
+
+    DTensorPolicyWorkerImpl.offload_after_refit(worker)
+
+    assert worker.move_to_cpu.call_count == int(offload_model_during_refit)
+    assert model.eval_called
+    worker.timer.start.assert_called_once_with("offload_after_refit")
+    worker.timer.stop.assert_called_once_with("offload_after_refit")
 
 
 def create_test_config(

@@ -45,8 +45,17 @@ policy:
   max_total_sequence_length: 4096
   dtensor_cfg:
     enabled: true
-    cpu_offload: true
-    activation_checkpointing: true
+    # The 7B policy fits comfortably on memory-rich H20s in the four-GPU
+    # Search-R1 workload. Keep state and activations resident to avoid repeated
+    # host/device copies and activation recomputation on the critical path.
+    cpu_offload: false
+    activation_checkpointing: false
+    # Dynamic 8K batching leaves over 40 GiB/card free. Keep the sharded Adam
+    # state resident instead of copying it to host and back every outer step.
+    offload_optimizer_during_refit: false
+    # The same measured headroom can hold the roughly 7 GiB/card sharded policy
+    # parameters beside vLLM. Avoid their D2H/H2D round trip every outer step.
+    offload_model_during_refit: false
     tensor_parallel_size: 1
   dynamic_batching:
     enabled: false
