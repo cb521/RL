@@ -52,6 +52,7 @@ class _Agent:
         self.rollout_config = SimpleNamespace(
             name=backend,
             full_determinism=False,
+            seed=42,
         )
         self.enable_continuous_token = False
         self.prompt = prompt
@@ -78,12 +79,16 @@ class _Agent:
         )
 
 
-def _run(agent, sampling_params=None):
+def _run(agent, sampling_params=None, **kwargs):
+    run_kwargs = {
+        "raw_prompt": [{"role": "user", "content": "Question"}],
+        **kwargs,
+    }
     return asyncio.run(
         adapter.run_protocol(
             agent,
             sampling_params or {"temperature": 1.0, "top_p": 1.0},
-            raw_prompt=[{"role": "user", "content": "Question"}],
+            **run_kwargs,
         )
     )
 
@@ -118,6 +123,55 @@ def test_search_then_answer_preserves_logprobs_and_observation_mask() -> None:
     assert params["include_stop_str_in_output"] is True
 
 
+def test_controlled_work_uses_raw_prompt_and_greedy_requests(monkeypatch) -> None:
+    monkeypatch.setenv("SEARCH_R1_WORKLOAD_MODE", "controlled")
+    agent = _Agent([_output("<answer>Answer</answer>")], prompt="wrapped")
+
+    result = _run(agent, index=7, session_id=3, global_steps=2)
+
+    assert result.prompt_ids == [ord(character) for character in "Question"]
+    params = agent.server_manager.calls[0]["sampling_params"]
+    assert params["temperature"] == 0.0
+    assert params["top_p"] == 1.0
+    assert params["top_k"] == -1
+    assert params["seed"] == 42 + 7 * 1024 + 3
+    assert agent.server_manager.calls[0]["request_id"] == (
+        "det-step-2-sample-7-rollout-3"
+    )
+
+
+def test_controlled_identity_is_unique_for_all_40_trajectories() -> None:
+    identities = {
+        adapter._controlled_request_identity(
+            0,
+            {"index": sample_index, "session_id": session_id, "global_steps": 1},
+        )[0]
+        for sample_index in range(8)
+        for session_id in range(5)
+    }
+
+    assert len(identities) == 40
+
+
+def test_controlled_identity_falls_back_to_legacy_priority(monkeypatch) -> None:
+    monkeypatch.setenv("SEARCH_R1_WORKLOAD_MODE", "controlled")
+    agent = _Agent([_output("<answer>Answer</answer>")])
+
+    _run(agent, priority=9)
+
+    params = agent.server_manager.calls[0]["sampling_params"]
+    assert params["seed"] == 51
+    assert agent.server_manager.calls[0]["request_id"] == "det-priority-9"
+
+
+def test_unknown_workload_mode_is_rejected(monkeypatch) -> None:
+    monkeypatch.setenv("SEARCH_R1_WORKLOAD_MODE", "unknown")
+    agent = _Agent([_output("<answer>Answer</answer>")])
+
+    with pytest.raises(ValueError, match="must be training or controlled"):
+        _run(agent)
+
+
 def test_common_trace_links_generation_and_retrieval(
     tmp_path, monkeypatch
 ) -> None:
@@ -140,6 +194,7 @@ def test_common_trace_links_generation_and_retrieval(
     ]
     assert {event["component"] for event in events} == {"current_verl"}
     assert len({event["trace_id"] for event in events}) == 1
+    assert events[0]["attributes"]["input_tokens"] == len(agent.prompt)
     retrieval = events[1]
     assert retrieval["attributes"]["provider_batch_id"] == agent.searches[0][1]
 

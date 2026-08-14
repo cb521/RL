@@ -18,10 +18,15 @@ seed="${SEARCH_R1_SEED:-42}"
 num_gpus="${SEARCH_R1_NUM_GPUS:-8}"
 allow_nonformal_preflight="${SEARCH_R1_ALLOW_NONFORMAL_PREFLIGHT:-0}"
 fast_iteration="${SEARCH_R1_FAST_ITERATION:-0}"
+workload_mode="${SEARCH_R1_WORKLOAD_MODE:-training}"
+controlled_data_manifest="${SEARCH_R1_CONTROLLED_DATA_MANIFEST:-}"
 
 expected_model_revision=d149729398750b98c0af14eb82c78cfe92750796
 expected_train_sha256=9904042da053be8e7fa275453c9221324d24aadb6f67323d040e6016da9bfaff
 expected_eval_sha256=bdcc57b4c3e88241bf7144f4e739c991c7a0ace4cd1ea26b6c602e2655445645
+expected_controlled_train_sha256=2b14840f263d12cda7005000775c8b39ffc397312d2f0f174f85123b789d7e21
+expected_controlled_manifest_sha256=09b4fa8a7127873c9083ff7dfa736ff087ad2c0d6b570dd6349d7bbfe6db1003
+controlled_semantic_rows_sha256=disabled
 lr_warmup_outer_steps=142
 
 case "${run_mode}" in
@@ -66,6 +71,37 @@ case "${run_mode}" in
     ;;
   *)
     echo "SEARCH_R1_RUN_MODE must be smoke, performance, or campaign, not ${run_mode}." >&2
+    exit 1
+    ;;
+esac
+
+case "${workload_mode}" in
+  training)
+    optimizer_lr=1e-6
+    rollout_request_temperature=1.0
+    prompt_encoding=search-r1-content-concat
+    weights_frozen=false
+    rollout_batch_invariant=false
+    ;;
+  controlled)
+    if [[ "${run_mode}" != performance || "${observability_mode}" != clean ]]; then
+      echo "SEARCH_R1_WORKLOAD_MODE=controlled requires a clean performance run." >&2
+      exit 1
+    fi
+    optimizer_lr=0.0
+    rollout_request_temperature=0.0
+    prompt_encoding=search-r1-content-concat
+    weights_frozen=true
+    rollout_batch_invariant=true
+    expected_train_sha256="${expected_controlled_train_sha256}"
+    controlled_semantic_rows_sha256=281e6efdf2a9a3d083010f68d82e20d6bd8469976ee1fffdcf6a0616e158b75d
+    if [[ -z "${controlled_data_manifest}" ]]; then
+      echo "SEARCH_R1_CONTROLLED_DATA_MANIFEST is required for controlled work." >&2
+      exit 1
+    fi
+    ;;
+  *)
+    echo "SEARCH_R1_WORKLOAD_MODE must be training or controlled, not ${workload_mode}." >&2
     exit 1
     ;;
 esac
@@ -118,6 +154,9 @@ case "${observability_mode}" in
     exit 1
     ;;
 esac
+if [[ "${workload_mode}" == controlled ]]; then
+  trace_sample_rate=1.0
+fi
 if [[ "${observability_mode}" == profile && "${run_mode}" != performance ]]; then
   echo "SEARCH_R1_OBSERVABILITY_MODE=profile requires SEARCH_R1_RUN_MODE=performance." >&2
   exit 1
@@ -143,6 +182,11 @@ for required_file in \
 done
 printf '%s  %s\n' "${expected_train_sha256}" "${train_file}" | sha256sum --check --status
 printf '%s  %s\n' "${expected_eval_sha256}" "${eval_file}" | sha256sum --check --status
+if [[ "${workload_mode}" == controlled ]]; then
+  printf '%s  %s\n' \
+    "${expected_controlled_manifest_sha256}" \
+    "${controlled_data_manifest}" | sha256sum --check --status
+fi
 if [[ "${retriever_url}" != http://*/retrieve && "${retriever_url}" != https://*/retrieve ]]; then
   echo "SEARCH_R1_RETRIEVER_URL must be an HTTP(S) /retrieve endpoint." >&2
   exit 1
@@ -190,10 +234,16 @@ else
   export AI_SEARCH_TRACE_SAMPLE_RATE="${trace_sample_rate}"
 fi
 export AI_SEARCH_RETRIEVER_URL="${retriever_url}"
+export SEARCH_R1_WORKLOAD_MODE="${workload_mode}"
 export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 export NEMO_RL_RAY_DASHBOARD=0
 export TOKENIZERS_PARALLELISM=false
+if [[ "${workload_mode}" == controlled ]]; then
+  export VLLM_BATCH_INVARIANT=1
+else
+  unset VLLM_BATCH_INVARIANT
+fi
 
 nemo_commit=$(git -C "${nemo_root}" rev-parse HEAD)
 nsys_profile_step_range=disabled
@@ -214,9 +264,18 @@ fi
   printf 'run_mode=%s\nobservability_mode=%s\n' "${run_mode}" "${observability_mode}"
   printf 'iteration_mode=%s\nwarmup_steps=%s\nmeasured_steps=%s\n' \
     "${iteration_mode}" "${warmup_steps}" "${measured_steps}"
+  printf 'workload_mode=%s\nprompt_encoding=%s\n' \
+    "${workload_mode}" "${prompt_encoding}"
+  printf 'rollout_request_temperature=%s\ntraining_logprob_temperature=1.0\n' \
+    "${rollout_request_temperature}"
+  printf 'weights_frozen_by_zero_lr=%s\n' "${weights_frozen}"
+  printf 'rollout_batch_invariant=%s\n' "${rollout_batch_invariant}"
   printf 'source_commit=%s\n' "${nemo_commit}"
   printf 'model_revision=%s\n' "${expected_model_revision}"
   printf 'train_sha256=%s\neval_sha256=%s\n' "${expected_train_sha256}" "${expected_eval_sha256}"
+  printf 'controlled_data_manifest_sha256=%s\n' \
+    "$([[ "${workload_mode}" == controlled ]] && echo "${expected_controlled_manifest_sha256}" || echo disabled)"
+  printf 'controlled_semantic_rows_sha256=%s\n' "${controlled_semantic_rows_sha256}"
   printf 'retriever_url=%s\nseed=%s\ntraining_gpus=%s\n' "${retriever_url}" "${seed}" "${num_gpus}"
   printf 'hardware_contract=%s\n' "${hardware_contract}"
   printf 'prompts_per_step=%s\nrollouts_per_prompt=5\n' "${prompts_per_step}"
@@ -224,7 +283,8 @@ fi
   printf 'train_global_batch_size=%s\ntrain_micro_batch_size_per_gpu=%s\n' "${train_global_batch_size}" "${train_micro_batch_size}"
   printf 'logprob_batch_size_per_gpu=%s\n' "${logprob_batch_size}"
   printf 'optimizer_updates_per_outer_step=%s\n' "$(((prompts_per_step * 5) / train_global_batch_size))"
-  printf 'optimizer=AdamW\noptimizer_lr=1e-6\noptimizer_weight_decay=0.01\n'
+  printf 'optimizer=AdamW\noptimizer_lr=%s\noptimizer_weight_decay=0.01\n' \
+    "${optimizer_lr}"
   printf 'optimizer_betas=0.9,0.999\noptimizer_epsilon=1e-8\n'
   printf 'lr_warmup_outer_steps=%s\nlr_after_warmup=constant\n' "${lr_warmup_outer_steps}"
   printf 'training_shuffle=false\nvalidation_sampling=greedy\n'
@@ -251,6 +311,7 @@ command=(
   "policy.train_global_batch_size=${train_global_batch_size}"
   "policy.train_micro_batch_size=${train_micro_batch_size}"
   "policy.logprob_batch_size=${logprob_batch_size}"
+  "policy.optimizer.kwargs.lr=${optimizer_lr}"
   policy.generation.temperature=1.0
   policy.generation.top_p=1.0
   policy.generation.val_temperature=0.0
@@ -265,6 +326,11 @@ command=(
   "logger.swanlab.name=nemo-${run_mode}-seed-${seed}"
 )
 
+if [[ "${workload_mode}" == controlled ]]; then
+  # Forward the flag into vLLM's inner workers as well as the outer Ray actor.
+  command+=(+policy.generation.vllm_cfg.env_vars.VLLM_BATCH_INVARIANT=1)
+fi
+
 if [[ "${SEARCH_R1_PRINT_COMMAND:-0}" == "1" ]]; then
   printf 'AI_SEARCH_MAX_STEPS=%q AI_SEARCH_NUM_PROMPTS=%q AI_SEARCH_NUM_GENERATIONS=5 ' \
     "${AI_SEARCH_MAX_STEPS}" "${AI_SEARCH_NUM_PROMPTS}"
@@ -274,7 +340,9 @@ if [[ "${SEARCH_R1_PRINT_COMMAND:-0}" == "1" ]]; then
 fi
 
 health_url="${retriever_url%/retrieve}/healthz"
-if ! curl --fail --silent --show-error "${health_url}" >/dev/null; then
+if ! curl --fail --silent --show-error --connect-timeout 5 --max-time 10 \
+  --retry 12 --retry-delay 5 --retry-max-time 120 --retry-all-errors \
+  "${health_url}" >/dev/null; then
   echo "The shared E5 retriever is not healthy at ${health_url}." >&2
   exit 1
 fi

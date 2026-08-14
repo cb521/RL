@@ -83,6 +83,7 @@ def test_nemo_search_r1_launcher_freezes_aligned_protocol() -> None:
         "vllm-http-servers",
         "policy-and-vllm-worker-processes-step-2",
         'health_url="${retriever_url%/retrieve}/healthz"',
+        "--retry 12 --retry-delay 5 --retry-max-time 120 --retry-all-errors",
         "The strict NeMo four-way launcher does not accept positional overrides.",
     )
     for fragment in required_fragments:
@@ -136,6 +137,79 @@ def test_nemo_fast_iteration_keeps_workload_and_measures_only_step_two() -> None
     assert "prompts_per_step=8" in source
     assert "export AI_SEARCH_NUM_GENERATIONS=5" in source
     assert "train_global_batch_size=40" in source
+
+
+def test_current_verl_fast_iteration_keeps_workload_and_measures_only_step_two() -> None:
+    source = _read(CURRENT_VERL_LAUNCHER)
+    for fragment in (
+        'fast_iteration="${SEARCH_R1_FAST_ITERATION:-0}"',
+        'if [[ "${fast_iteration}" == "1" ]]',
+        "total_steps=2",
+        "iteration_mode=fast-screening",
+        "measured_steps=2",
+        "SEARCH_R1_FAST_ITERATION=1 is only valid for performance runs.",
+        "SEARCH_R1_FAST_ITERATION must be 0 or 1",
+        "printf 'iteration_mode=%s\\nwarmup_steps=%s\\nmeasured_steps=%s\\n'",
+    ):
+        assert fragment in source
+
+    assert "prompts_per_step=8" in source
+    assert "actor_rollout_ref.rollout.n=5" in source
+    assert "ppo_mini_batch_size=8" in source
+
+
+def test_controlled_work_mode_freezes_outputs_and_records_exact_work() -> None:
+    for launcher in (NEMO_SEARCH_R1_LAUNCHER, CURRENT_VERL_LAUNCHER):
+        source = _read(launcher)
+        for fragment in (
+            'workload_mode="${SEARCH_R1_WORKLOAD_MODE:-training}"',
+            'optimizer_lr=0.0',
+            'rollout_request_temperature=0.0',
+            'weights_frozen=true',
+            'trace_sample_rate=1.0',
+            'export SEARCH_R1_WORKLOAD_MODE="${workload_mode}"',
+            'printf \'workload_mode=%s\\nprompt_encoding=%s\\n\'',
+            'printf \'rollout_request_temperature=%s\\ntraining_logprob_temperature=1.0\\n\'',
+            'printf \'weights_frozen_by_zero_lr=%s\\n\'',
+            'SEARCH_R1_WORKLOAD_MODE=controlled requires a clean performance run.',
+            'SEARCH_R1_WORKLOAD_MODE must be training or controlled',
+            'SEARCH_R1_CONTROLLED_DATA_MANIFEST is required for controlled work.',
+            'expected_controlled_manifest_sha256=09b4fa8a7127873c9083ff7dfa736ff087ad2c0d6b570dd6349d7bbfe6db1003',
+            'controlled_semantic_rows_sha256=281e6efdf2a9a3d083010f68d82e20d6bd8469976ee1fffdcf6a0616e158b75d',
+            "printf 'controlled_data_manifest_sha256=%s\\n'",
+        ):
+            assert fragment in source
+
+    assert 'prompt_encoding=search-r1-content-concat' in _read(
+        NEMO_SEARCH_R1_LAUNCHER
+    )
+    current_source = _read(CURRENT_VERL_LAUNCHER)
+    assert 'prompt_encoding=qwen-chat-template' in current_source
+    assert 'prompt_encoding=search-r1-content-concat' in current_source
+    assert "filter_overlong_prompts=true" in current_source
+    assert "filter_overlong_prompts=false" in current_source
+    assert '"data.filter_overlong_prompts=${filter_overlong_prompts}"' in current_source
+    assert "printf 'filter_overlong_prompts=%s\\n'" in current_source
+    assert '"actor_rollout_ref.actor.optim.lr=${optimizer_lr}"' in current_source
+    assert "export VLLM_BATCH_INVARIANT=1" in current_source
+    assert "deterministic_request_identity=true" in current_source
+    assert "rollout_batch_invariant=true" in current_source
+    assert '"policy.optimizer.kwargs.lr=${optimizer_lr}"' in _read(
+        NEMO_SEARCH_R1_LAUNCHER
+    )
+    nemo_source = _read(NEMO_SEARCH_R1_LAUNCHER)
+    assert "export VLLM_BATCH_INVARIANT=1" in nemo_source
+    assert "+policy.generation.vllm_cfg.env_vars.VLLM_BATCH_INVARIANT=1" in nemo_source
+    assert (
+        "expected_controlled_train_sha256="
+        "2b14840f263d12cda7005000775c8b39ffc397312d2f0f174f85123b789d7e21"
+        in nemo_source
+    )
+    assert (
+        "expected_controlled_train_sha256="
+        "213253af32ebad44378a47329e9f99a26dbda81d3175ac6a2c11d0f001ef3b20"
+        in current_source
+    )
 
 
 def test_campaign_launchers_save_only_midpoint_and_final_checkpoints() -> None:
