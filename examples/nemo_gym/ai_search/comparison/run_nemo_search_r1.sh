@@ -20,6 +20,7 @@ allow_nonformal_preflight="${SEARCH_R1_ALLOW_NONFORMAL_PREFLIGHT:-0}"
 fast_iteration="${SEARCH_R1_FAST_ITERATION:-0}"
 workload_mode="${SEARCH_R1_WORKLOAD_MODE:-training}"
 runtime_profile="${SEARCH_R1_NEMO_RUNTIME_PROFILE:-discard}"
+batch_invariant_block_size_m="${SEARCH_R1_NEMO_BATCH_INVARIANT_BLOCK_SIZE_M:-64}"
 controlled_data_manifest="${SEARCH_R1_CONTROLLED_DATA_MANIFEST:-}"
 
 expected_model_revision=d149729398750b98c0af14eb82c78cfe92750796
@@ -132,6 +133,14 @@ case "${runtime_profile}" in
     ;;
   *)
     echo "SEARCH_R1_NEMO_RUNTIME_PROFILE must be discard, offload, or resident, not ${runtime_profile}." >&2
+    exit 1
+    ;;
+esac
+
+case "${batch_invariant_block_size_m}" in
+  16|32|64|128) ;;
+  *)
+    echo "SEARCH_R1_NEMO_BATCH_INVARIANT_BLOCK_SIZE_M must be 16, 32, 64, or 128, not ${batch_invariant_block_size_m}." >&2
     exit 1
     ;;
 esac
@@ -300,6 +309,8 @@ fi
     "${rollout_request_temperature}"
   printf 'weights_frozen_by_zero_lr=%s\n' "${weights_frozen}"
   printf 'rollout_batch_invariant=%s\n' "${rollout_batch_invariant}"
+  printf 'vllm_batch_invariant_block_size_m=%s\n' \
+    "$([[ "${workload_mode}" == controlled ]] && echo "${batch_invariant_block_size_m}" || echo disabled)"
   printf 'nemo_runtime_profile=%s\n' "${runtime_profile}"
   printf 'vllm_sleep_level=%s\n' "${vllm_sleep_level}"
   printf 'vllm_gpu_memory_utilization=%s\n' "${vllm_gpu_memory_utilization}"
@@ -362,7 +373,10 @@ command=(
 
 if [[ "${workload_mode}" == controlled ]]; then
   # Forward the flag into vLLM's inner workers as well as the outer Ray actor.
-  command+=(+policy.generation.vllm_cfg.env_vars.VLLM_BATCH_INVARIANT=1)
+  command+=(
+    +policy.generation.vllm_cfg.env_vars.VLLM_BATCH_INVARIANT=1
+    "+policy.generation.vllm_cfg.env_vars.NRL_VLLM_BATCH_INVARIANT_BLOCK_SIZE_M=${batch_invariant_block_size_m}"
+  )
 fi
 if [[ "${runtime_profile}" != discard ]]; then
   command+=("policy.generation.vllm_cfg.sleep_level=${vllm_sleep_level}")

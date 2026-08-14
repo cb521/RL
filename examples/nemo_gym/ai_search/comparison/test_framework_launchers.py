@@ -225,6 +225,13 @@ def test_controlled_work_mode_freezes_outputs_and_records_exact_work() -> None:
     nemo_source = _read(NEMO_SEARCH_R1_LAUNCHER)
     assert "export VLLM_BATCH_INVARIANT=1" in nemo_source
     assert "+policy.generation.vllm_cfg.env_vars.VLLM_BATCH_INVARIANT=1" in nemo_source
+    for fragment in (
+        'batch_invariant_block_size_m="${SEARCH_R1_NEMO_BATCH_INVARIANT_BLOCK_SIZE_M:-64}"',
+        "SEARCH_R1_NEMO_BATCH_INVARIANT_BLOCK_SIZE_M must be 16, 32, 64, or 128",
+        "printf 'vllm_batch_invariant_block_size_m=%s\\n'",
+        '"+policy.generation.vllm_cfg.env_vars.NRL_VLLM_BATCH_INVARIANT_BLOCK_SIZE_M=${batch_invariant_block_size_m}"',
+    ):
+        assert fragment in nemo_source
     assert (
         "expected_controlled_train_sha256="
         "2b14840f263d12cda7005000775c8b39ffc397312d2f0f174f85123b789d7e21"

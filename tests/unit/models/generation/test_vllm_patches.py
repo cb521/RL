@@ -36,6 +36,7 @@ import pytest
 
 from nemo_rl.models.generation.vllm import patches
 from tests.unit.models.generation.vllm_patch_source_utils import (
+    patch_snippets,
     write_unpatched_copy,
 )
 
@@ -48,6 +49,9 @@ _RADIO_MARKER = "initializer_factor = self.config.initializer_factor"
 _LOGPROB_SOURCE = "v1/worker/gpu/sample/logprob.py"
 _LOGPROB_PATCH_FN = "_patch_vllm_torch_logprobs"
 _LOGPROB_MARKER = "NeMo-RL compatibility path"
+_BATCH_INVARIANT_SOURCE = "model_executor/layers/batch_invariant.py"
+_BATCH_INVARIANT_PATCH_FN = "_patch_vllm_batch_invariant_block_size"
+_BATCH_INVARIANT_MARKER = '"BLOCK_SIZE_M": batch_invariant_block_size_m'
 
 
 @pytest.fixture
@@ -76,6 +80,19 @@ def patched_logprob_source(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(patches, "_get_vllm_file", lambda _relative: str(copied))
     assert patches._patch_vllm_torch_logprobs(logging.getLogger(__name__))
+    return copied
+
+
+@pytest.fixture
+def patched_batch_invariant_source(tmp_path, monkeypatch):
+    """The installed deterministic GEMM source, unpatched then patched in tmp."""
+    copied = write_unpatched_copy(
+        _BATCH_INVARIANT_SOURCE,
+        _BATCH_INVARIANT_PATCH_FN,
+        tmp_path / "batch_invariant.py",
+    )
+    monkeypatch.setattr(patches, "_get_vllm_file", lambda _relative: str(copied))
+    assert patches._patch_vllm_batch_invariant_block_size(logging.getLogger(__name__))
     return copied
 
 
@@ -233,6 +250,68 @@ def test_torch_logprob_patch_rejects_unknown_source(monkeypatch, tmp_path, caplo
     assert "vLLM 0.25.1 source shape was not found" in caplog.text
 
 
+@pytest.mark.vllm
+def test_batch_invariant_tile_patch_matches_installed_vllm(
+    patched_batch_invariant_source,
+):
+    content = patched_batch_invariant_source.read_text()
+    assert _BATCH_INVARIANT_MARKER in content
+    assert patches.BATCH_INVARIANT_BLOCK_SIZE_M_ENV in content
+    assert "batch_invariant_block_size_m not in (16, 32, 64, 128)" in content
+    assert "M <= 10" not in content
+    ast.parse(content)
+
+
+@pytest.mark.vllm
+def test_batch_invariant_tile_patch_is_idempotent(
+    patched_batch_invariant_source, monkeypatch
+):
+    before = patched_batch_invariant_source.read_text()
+    monkeypatch.setattr(
+        patches,
+        "_get_vllm_file",
+        lambda _relative: str(patched_batch_invariant_source),
+    )
+
+    assert patches._patch_vllm_batch_invariant_block_size(logging.getLogger(__name__))
+    assert patched_batch_invariant_source.read_text() == before
+
+
+def test_batch_invariant_tile_patch_migrates_trace_invisible_selector(
+    monkeypatch, tmp_path
+):
+    _, new_snippet, legacy_snippets = patch_snippets(_BATCH_INVARIANT_PATCH_FN)
+    assert len(legacy_snippets) == 1
+    batch_invariant_source = tmp_path / "batch_invariant.py"
+    batch_invariant_source.write_text(legacy_snippets[0])
+    monkeypatch.setattr(
+        patches, "_get_vllm_file", lambda _relative: str(batch_invariant_source)
+    )
+
+    assert patches._patch_vllm_batch_invariant_block_size(logging.getLogger(__name__))
+    content = batch_invariant_source.read_text()
+    assert new_snippet in content
+    assert legacy_snippets[0] not in content
+
+
+def test_batch_invariant_tile_patch_rejects_unknown_source(
+    monkeypatch, tmp_path, caplog
+):
+    batch_invariant_source = tmp_path / "batch_invariant.py"
+    batch_invariant_source.write_text("def matmul_persistent():\n    pass\n")
+    monkeypatch.setattr(
+        patches, "_get_vllm_file", lambda _relative: str(batch_invariant_source)
+    )
+
+    with caplog.at_level(logging.WARNING):
+        assert not patches._patch_vllm_batch_invariant_block_size(
+            logging.getLogger(__name__)
+        )
+
+    assert batch_invariant_source.read_text() == "def matmul_persistent():\n    pass\n"
+    assert "vLLM 0.25.1 source shape was not found" in caplog.text
+
+
 def test_worker_enables_and_forwards_torch_logprob_fallback(monkeypatch):
     from nemo_rl.models.generation.vllm import vllm_worker
 
@@ -269,6 +348,43 @@ def test_worker_enables_and_forwards_torch_logprob_fallback(monkeypatch):
     assert captured["extra_env_vars"] == [
         "EXISTING_VAR",
         patches.USE_TORCH_LOGPROBS_ENV,
+    ]
+
+
+def test_worker_forwards_batch_invariant_tile(monkeypatch):
+    from nemo_rl.models.generation.vllm import vllm_worker
+
+    captured = {}
+
+    def capture_apply(_py_executable, *, extra_env_vars=None):
+        captured["extra_env_vars"] = extra_env_vars
+
+    monkeypatch.setenv(patches.BATCH_INVARIANT_BLOCK_SIZE_M_ENV, "32")
+    monkeypatch.setattr(vllm_worker, "_apply_vllm_patches", capture_apply)
+
+    worker = vllm_worker.BaseVllmGenerationWorker.__new__(
+        vllm_worker.BaseVllmGenerationWorker
+    )
+    worker._init_config(
+        {
+            "model_name": "unused",
+            "vllm_cfg": {
+                "tensor_parallel_size": 1,
+                "pipeline_parallel_size": 1,
+                "expert_parallel_size": 1,
+                "gpu_memory_utilization": 0.5,
+                "precision": "bfloat16",
+            },
+        },
+        bundle_indices=[0],
+        fraction_of_gpus=1.0,
+        seed=0,
+        extra_env_vars=["EXISTING_VAR"],
+    )
+
+    assert captured["extra_env_vars"] == [
+        "EXISTING_VAR",
+        patches.BATCH_INVARIANT_BLOCK_SIZE_M_ENV,
     ]
 
 

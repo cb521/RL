@@ -28,8 +28,8 @@ from pathlib import Path
 from nemo_rl.models.generation.vllm import patches
 
 
-def patch_snippets(patch_fn_name: str) -> tuple[str, str]:
-    """Return ``(old_snippet, new_snippet)`` for a patch function in patches.py.
+def patch_snippets(patch_fn_name: str) -> tuple[str, str, tuple[str, ...]]:
+    """Return old, new, and legacy snippets for a patch function.
 
     Read out of the source with ``ast`` rather than duplicated here, so the
     snippets cannot drift from the patch they are meant to reverse.
@@ -47,14 +47,22 @@ def patch_snippets(patch_fn_name: str) -> tuple[str, str]:
         ) from None
 
     snippets = {}
+    legacy_snippets = []
     for node in ast.walk(func):
         if (
             isinstance(node, ast.Assign)
             and len(node.targets) == 1
             and isinstance(node.targets[0], ast.Name)
-            and node.targets[0].id in ("old_snippet", "new_snippet")
+            and (
+                node.targets[0].id in ("old_snippet", "new_snippet")
+                or node.targets[0].id.startswith("legacy_snippet")
+            )
         ):
-            snippets[node.targets[0].id] = ast.literal_eval(node.value)
+            value = ast.literal_eval(node.value)
+            if node.targets[0].id.startswith("legacy_snippet"):
+                legacy_snippets.append(value)
+            else:
+                snippets[node.targets[0].id] = value
 
     missing = {"old_snippet", "new_snippet"} - snippets.keys()
     if missing:
@@ -62,7 +70,7 @@ def patch_snippets(patch_fn_name: str) -> tuple[str, str]:
             f"{patch_fn_name} no longer defines {sorted(missing)}; the test "
             "helper can no longer reverse its patch"
         )
-    return snippets["old_snippet"], snippets["new_snippet"]
+    return snippets["old_snippet"], snippets["new_snippet"], tuple(legacy_snippets)
 
 
 def write_unpatched_copy(
@@ -80,14 +88,21 @@ def write_unpatched_copy(
     Returns:
         ``destination``.
     """
-    old_snippet, new_snippet = patch_snippets(patch_fn_name)
+    old_snippet, new_snippet, legacy_snippets = patch_snippets(patch_fn_name)
     content = Path(patches._get_vllm_file(relative_source)).read_text()
 
     if new_snippet in content:
         content = content.replace(new_snippet, old_snippet, 1)
+    for legacy_snippet in legacy_snippets:
+        if legacy_snippet in content:
+            content = content.replace(legacy_snippet, old_snippet, 1)
     assert new_snippet not in content, (
         f"reversing {patch_fn_name} left its replacement behind in "
         f"{relative_source}; the patch may have been applied more than once"
+    )
+    assert not any(snippet in content for snippet in legacy_snippets), (
+        f"reversing {patch_fn_name} left a legacy replacement behind in "
+        f"{relative_source}; its migration path may have drifted"
     )
     assert old_snippet in content, (
         f"{relative_source} contains neither the patched nor the original form "
