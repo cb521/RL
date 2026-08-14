@@ -74,6 +74,8 @@ def test_nemo_search_r1_launcher_freezes_aligned_protocol() -> None:
         "policy.generation.top_p=1.0",
         "policy.generation.val_temperature=0.0",
         "policy.generation.val_top_p=1.0",
+        "loss_fn.force_on_policy_ratio=false",
+        "printf 'force_on_policy_ratio=false\\n'",
         "grpo.val_num_generations_per_prompt=1",
         '"checkpointing.enabled=${checkpoint_enabled}"',
         "checkpointing.save_period=250",
@@ -96,6 +98,7 @@ def test_nemo_search_r1_launcher_freezes_aligned_protocol() -> None:
 
     config = yaml.safe_load(NEMO_FOUR_WAY_CONFIG.read_text(encoding="utf-8"))
     assert config["data"]["shuffle"] is False
+    assert config["loss_fn"]["force_on_policy_ratio"] is False
     assert config["policy"]["generation"] == {
         "val_temperature": 0.0,
         "val_top_p": 1.0,
@@ -223,6 +226,7 @@ def test_controlled_work_mode_freezes_outputs_and_records_exact_work() -> None:
         NEMO_SEARCH_R1_LAUNCHER
     )
     nemo_source = _read(NEMO_SEARCH_R1_LAUNCHER)
+    assert "loss_fn.force_on_policy_ratio=false" in nemo_source
     assert "export VLLM_BATCH_INVARIANT=1" in nemo_source
     assert "+policy.generation.vllm_cfg.env_vars.VLLM_BATCH_INVARIANT=1" in nemo_source
     for fragment in (

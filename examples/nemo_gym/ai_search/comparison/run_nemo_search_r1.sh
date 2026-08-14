@@ -328,6 +328,7 @@ fi
   printf 'train_global_batch_size=%s\ntrain_micro_batch_size_per_gpu=%s\n' "${train_global_batch_size}" "${train_micro_batch_size}"
   printf 'logprob_batch_size_per_gpu=%s\n' "${logprob_batch_size}"
   printf 'optimizer_updates_per_outer_step=%s\n' "$(((prompts_per_step * 5) / train_global_batch_size))"
+  printf 'force_on_policy_ratio=false\n'
   printf 'optimizer=AdamW\noptimizer_lr=%s\noptimizer_weight_decay=0.01\n' \
     "${optimizer_lr}"
   printf 'optimizer_betas=0.9,0.999\noptimizer_epsilon=1e-8\n'
@@ -361,6 +362,7 @@ command=(
   policy.generation.top_p=1.0
   policy.generation.val_temperature=0.0
   policy.generation.val_top_p=1.0
+  loss_fn.force_on_policy_ratio=false
   "grpo.val_period=${val_period}"
   "grpo.val_at_start=${val_at_start}"
   "grpo.val_at_end=${val_at_end}"
