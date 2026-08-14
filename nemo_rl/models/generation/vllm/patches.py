@@ -17,6 +17,7 @@ from contextlib import contextmanager
 from importlib.util import find_spec
 
 USE_TORCH_LOGPROBS_ENV = "NRL_VLLM_USE_TORCH_LOGPROBS"
+BATCH_INVARIANT_BLOCK_SIZE_M_ENV = "NRL_VLLM_BATCH_INVARIANT_BLOCK_SIZE_M"
 
 
 def _get_vllm_file(relative_path: str) -> str:
@@ -586,7 +587,7 @@ def _patch_vllm_torch_logprobs(logger) -> bool:
         logger.warning("Could not locate vLLM logprob.py for patch: %s", error)
         return False
 
-    old_snippet = '''def compute_token_logprobs(
+    old_snippet = """def compute_token_logprobs(
     logits: torch.Tensor, token_ids: torch.Tensor
 ) -> torch.Tensor:
     # NOTE(woosuk): To save GPU memory, we do not materialize the full
@@ -610,8 +611,8 @@ def _patch_vllm_torch_logprobs(logger) -> bool:
         TOPK_BLOCK_SIZE=topk_block_size,
     )
     return logprobs
-'''
-    new_snippet = '''def compute_token_logprobs(
+"""
+    new_snippet = """def compute_token_logprobs(
     logits: torch.Tensor, token_ids: torch.Tensor
 ) -> torch.Tensor:
     # NeMo-RL compatibility path for workloads that hang in vLLM's Triton
@@ -646,7 +647,7 @@ def _patch_vllm_torch_logprobs(logger) -> bool:
         TOPK_BLOCK_SIZE=topk_block_size,
     )
     return logprobs
-'''
+"""
 
     with _locked_file_patch(file_to_patch) as (content, write_back):
         if new_snippet in content:
@@ -662,6 +663,92 @@ def _patch_vllm_torch_logprobs(logger) -> bool:
         write_back(content.replace(old_snippet, new_snippet, 1))
 
     logger.info("Successfully patched vLLM PyTorch logprob fallback.")
+    return True
+
+
+def _patch_vllm_batch_invariant_block_size(logger) -> bool:
+    """Add an opt-in fixed M tile for vLLM's deterministic BF16 GEMM.
+
+    vLLM 0.25.1 uses a 128-row tile for every batch-invariant matrix
+    multiplication. Search-R1's captured decode graphs have only 1-10 rows, so
+    most of that tile is masked work. The guarded hook accepts 16, 32, 64, or
+    the upstream default 128 and fixes the selected value for the whole
+    compiled backbone.
+
+    The tile intentionally cannot depend on ``M``. vLLM first traces one
+    symbolic-M backbone with a large warmup batch; a Python ``M <= 10`` branch
+    is therefore constant-folded to the large-M choice before the 1-10-row
+    decode CUDA graphs are captured. A process-wide value is visible while
+    Dynamo traces the backbone and is consequently baked into those graphs.
+
+    The source change itself is safe in the shared runtime: an unset
+    environment variable resolves to 128 and therefore preserves upstream
+    behavior. Fixed small tiles also affect prefill, so the controlled launcher
+    only selects one after a workload-weighted decode/prefill benchmark.
+
+    Returns:
+        Whether the guarded tile selection is installed in the vLLM source.
+    """
+    try:
+        file_to_patch = _get_vllm_file("model_executor/layers/batch_invariant.py")
+    except RuntimeError as error:
+        logger.warning("Could not locate vLLM batch_invariant.py for patch: %s", error)
+        return False
+
+    old_snippet = """    configs = {
+        torch.bfloat16: {
+            "BLOCK_SIZE_M": 128,
+"""
+    legacy_snippet = """    decode_block_size_m = int(
+        os.environ.get(
+            "NRL_VLLM_BATCH_INVARIANT_DECODE_BLOCK_SIZE_M", "128"
+        )
+    )
+    if decode_block_size_m not in (16, 32, 64, 128):
+        raise ValueError(
+            "NRL_VLLM_BATCH_INVARIANT_DECODE_BLOCK_SIZE_M must be one of "
+            "16, 32, 64, or 128"
+        )
+
+    configs = {
+        torch.bfloat16: {
+            "BLOCK_SIZE_M": decode_block_size_m if M <= 10 else 128,
+"""
+    new_snippet = """    batch_invariant_block_size_m = int(
+        os.environ.get("NRL_VLLM_BATCH_INVARIANT_BLOCK_SIZE_M", "128")
+    )
+    if batch_invariant_block_size_m not in (16, 32, 64, 128):
+        raise ValueError(
+            "NRL_VLLM_BATCH_INVARIANT_BLOCK_SIZE_M must be one of "
+            "16, 32, 64, or 128"
+        )
+
+    configs = {
+        torch.bfloat16: {
+            "BLOCK_SIZE_M": batch_invariant_block_size_m,
+"""
+
+    with _locked_file_patch(file_to_patch) as (content, write_back):
+        if new_snippet in content:
+            logger.info("vLLM batch-invariant block-size patch already applied.")
+            return True
+        if legacy_snippet in content:
+            write_back(content.replace(legacy_snippet, new_snippet, 1))
+            logger.info(
+                "Migrated vLLM batch-invariant block size from the "
+                "trace-invisible decode selector."
+            )
+            return True
+        if old_snippet not in content:
+            logger.warning(
+                "Could not apply vLLM batch-invariant block-size hook: "
+                "expected vLLM 0.25.1 source shape was not found in %s.",
+                file_to_patch,
+            )
+            return False
+        write_back(content.replace(old_snippet, new_snippet, 1))
+
+    logger.info("Successfully patched vLLM batch-invariant block size.")
     return True
 
 
@@ -737,6 +824,14 @@ def _apply_vllm_patches(
     _patch_vllm_ray_executor_v2_tcpstore_port(patch_logger)
     _patch_vllm_shm_broadcast_bind_retry(patch_logger)
     _patch_vllm_radio_layerscale_loader(patch_logger)
+    if os.environ.get(BATCH_INVARIANT_BLOCK_SIZE_M_ENV) is not None and not (
+        _patch_vllm_batch_invariant_block_size(patch_logger)
+    ):
+        raise RuntimeError(
+            f"{BATCH_INVARIANT_BLOCK_SIZE_M_ENV} was requested, but "
+            "the vLLM 0.25.1 batch-invariant GEMM patch could not be installed. "
+            "Refusing to silently use the 128-row tile."
+        )
     if os.environ.get(USE_TORCH_LOGPROBS_ENV) == "1" and not (
         _patch_vllm_torch_logprobs(patch_logger)
     ):

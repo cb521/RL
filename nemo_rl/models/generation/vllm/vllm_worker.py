@@ -45,6 +45,7 @@ from nemo_rl.models.generation.vllm.config import (
     VllmConfig,
 )
 from nemo_rl.models.generation.vllm.patches import (
+    BATCH_INVARIANT_BLOCK_SIZE_M_ENV,
     USE_TORCH_LOGPROBS_ENV,
     _apply_vllm_patches,
 )
@@ -329,6 +330,8 @@ class BaseVllmGenerationWorker:
         if self.cfg["vllm_cfg"].get("use_torch_logprobs", False):
             os.environ[USE_TORCH_LOGPROBS_ENV] = "1"
             patch_extra_env_vars.append(USE_TORCH_LOGPROBS_ENV)
+        if os.environ.get(BATCH_INVARIANT_BLOCK_SIZE_M_ENV) is not None:
+            patch_extra_env_vars.append(BATCH_INVARIANT_BLOCK_SIZE_M_ENV)
 
         # Store the Python executable being used by this worker
         self.py_executable = sys.executable
