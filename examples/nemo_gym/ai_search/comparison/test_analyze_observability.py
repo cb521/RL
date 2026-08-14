@@ -73,9 +73,9 @@ def test_analyze_traces_links_resource_and_retriever_batches(tmp_path) -> None:
     assert report["provider_batch_links"]["linked_batches"] == 1
     assert report["provider_batch_links"]["retriever_batches"] == 1
     assert report["operations_ms"]["resource_server/search"]["p95"] == 10.0
-    assert report["operation_activity"]["resource_server/search"][
-        "wall_union_ms"
-    ] == 10.0
+    assert (
+        report["operation_activity"]["resource_server/search"]["wall_union_ms"] == 10.0
+    )
     assert report["timeline_activity"]["retrieval_wall_union_ms"] == 10.0
 
 
@@ -327,15 +327,9 @@ Collecting rollouts: 100%|██████████| 40/40 [00:08<00:00, 5.
     assert report["steady_step_count"] == 1
     assert report["timing_seconds"]["total_step_time"]["mean"] == 8.0
     assert report["native_throughput"]["E2E (Tokens/sec/gpu)"]["mean"] == 200.0
-    assert report["throughput"]["E2E Model-generated (Tokens/sec)"][
-        "mean"
-    ] == 1250.0
-    assert report["throughput"]["E2E Response-sequence (Tokens/sec)"][
-        "mean"
-    ] == 1375.0
-    assert report["throughput"]["E2E Processed-sequence (Tokens/sec)"][
-        "mean"
-    ] == 1600.0
+    assert report["throughput"]["E2E Model-generated (Tokens/sec)"]["mean"] == 1250.0
+    assert report["throughput"]["E2E Response-sequence (Tokens/sec)"]["mean"] == 1375.0
+    assert report["throughput"]["E2E Processed-sequence (Tokens/sec)"]["mean"] == 1600.0
     assert report["results"]["avg_reward"]["mean"] == 0.2
     assert report["results"]["mean_generation_length"]["mean"] == 250.0
     assert report["work"]["completed_trajectories"]["mean"] == 40.0
@@ -344,6 +338,31 @@ Collecting rollouts: 100%|██████████| 40/40 [00:08<00:00, 5.
     assert report["work"]["response_tokens"]["mean"] == 11_000.0
     assert report["work"]["processed_tokens"]["mean"] == 12_800.0
     assert report["steps"][1]["requested_trajectories"] == 40
+
+
+def test_parse_training_console_numbers_steps_across_epochs(tmp_path) -> None:
+    console = tmp_path / "multi_epoch_console.log"
+    console.write_text(
+        """
+========================= Step 1/2 =========================
+  • Total step time: 50.00s
+========================= Step 2/2 =========================
+  • Total step time: 40.00s
+========================= Step 1/2 =========================
+  • Total step time: 39.00s
+========================= Step 2/2 =========================
+  • Total step time: 38.00s
+""",
+        encoding="utf-8",
+    )
+
+    report = parse_training_console(console, warmup_steps=1)
+
+    assert report["step_count"] == 4
+    assert report["steady_step_count"] == 3
+    assert [step["step"] for step in report["steps"]] == [1, 2, 3, 4]
+    assert [step["reported_step"] for step in report["steps"]] == [1, 2, 1, 2]
+    assert report["timing_seconds"]["total_step_time"]["mean"] == 39.0
 
 
 def test_parse_original_verl_console_normalizes_step_metrics(tmp_path) -> None:
@@ -381,12 +400,8 @@ def test_parse_original_verl_console_normalizes_step_metrics(tmp_path) -> None:
     assert report["timing_seconds"]["generation_and_agent"]["mean"] == 3.0
     assert report["timing_seconds"]["postprocessing_reward_advantage"]["mean"] == 0.4
     assert report["throughput"]["E2E (Samples/sec)"]["mean"] == 5.0
-    assert report["throughput"]["E2E Processed-sequence (Tokens/sec)"][
-        "mean"
-    ] == 1000.0
-    assert report["throughput"]["E2E Model-generated (Tokens/sec)"][
-        "mean"
-    ] == 550.0
+    assert report["throughput"]["E2E Processed-sequence (Tokens/sec)"]["mean"] == 1000.0
+    assert report["throughput"]["E2E Model-generated (Tokens/sec)"]["mean"] == 550.0
     assert report["native_throughput"]["perf/throughput"]["mean"] == 125.0
     assert report["work"]["generated_tokens"]["mean"] == 4400.0
     assert report["work"]["observation_tokens"]["mean"] == 400.0
@@ -424,9 +439,7 @@ def test_parse_current_verl_console_maps_advantage_without_double_counting(
     assert report["work"]["generated_tokens"]["mean"] == 3600.0
     assert report["work"]["observation_tokens"]["mean"] == 800.0
     assert report["work"]["invalid_actions"]["mean"] == 1.0
-    assert report["throughput"]["E2E Model-generated (Tokens/sec)"][
-        "mean"
-    ] == 400.0
+    assert report["throughput"]["E2E Model-generated (Tokens/sec)"]["mean"] == 400.0
 
 
 def test_parse_slime_console_requires_rollout_and_update_evidence(tmp_path) -> None:
@@ -465,15 +478,14 @@ def test_parse_slime_console_requires_rollout_and_update_evidence(tmp_path) -> N
     assert report["timing_seconds"]["total_step_time"]["mean"] == 8.0
     assert report["timing_seconds"]["generation_and_agent"]["mean"] == 3.0
     assert report["throughput"]["E2E (Samples/sec)"]["mean"] == 5.0
-    assert report["throughput"]["E2E Model-generated (Tokens/sec)"][
-        "mean"
-    ] == 600.0
+    assert report["throughput"]["E2E Model-generated (Tokens/sec)"]["mean"] == 600.0
     assert report["work"]["generated_tokens"]["mean"] == 4800.0
     assert report["work"]["response_tokens"]["mean"] == 5400.0
     assert report["work"]["observation_tokens"]["mean"] == 600.0
-    assert report["native_throughput"][
-        "perf/effective_tokens_per_gpu_per_sec"
-    ]["mean"] == 200.0
+    assert (
+        report["native_throughput"]["perf/effective_tokens_per_gpu_per_sec"]["mean"]
+        == 200.0
+    )
     assert report["results"]["mean_generation_length"]["mean"] == 120.0
 
 
@@ -603,6 +615,37 @@ def test_analyze_step_timestamps_finds_steady_window(
     assert report["steady_step_ids"] == [2]
     assert report["start_unix_seconds"] == expected_start
     assert report["end_unix_seconds"] == expected_end
+
+
+def test_analyze_step_timestamps_numbers_nemo_steps_across_epochs(tmp_path) -> None:
+    timestamped = tmp_path / "multi_epoch_console.tsv"
+    timestamped.write_text(
+        "\n".join(
+            (
+                "1.0\t===== Step 1/2 =====",
+                "2.0\t  • Training FLOPS: 10 TFLOPS",
+                "3.0\t===== Step 2/2 =====",
+                "4.0\t  • Training FLOPS: 11 TFLOPS",
+                "5.0\t===== Step 1/2 =====",
+                "6.0\t  • Training FLOPS: 12 TFLOPS",
+                "7.0\t===== Step 2/2 =====",
+                "8.0\t  • Training FLOPS: 13 TFLOPS",
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    report = analyze_step_timestamps(
+        timestamped,
+        framework="nemo",
+        warmup_steps=1,
+    )
+
+    assert report["available"] is True
+    assert report["steady_step_ids"] == [2, 3, 4]
+    assert report["start_unix_seconds"] == 3.0
+    assert report["end_unix_seconds"] == 8.0
 
 
 def test_resource_and_trace_analyzers_filter_to_measurement_window(tmp_path) -> None:

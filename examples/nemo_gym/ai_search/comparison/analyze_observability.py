@@ -84,9 +84,7 @@ _RETRIEVAL_OPERATIONS = {
 }
 
 
-def _add_canonical_throughput(
-    step: dict[str, Any], *, training_gpus: int
-) -> None:
+def _add_canonical_throughput(step: dict[str, Any], *, training_gpus: int) -> None:
     """Compute rates only from explicitly classified work counters."""
     total_seconds = step["timing_seconds"].get("total_step_time")
     if not isinstance(total_seconds, (int, float)) or total_seconds <= 0:
@@ -277,9 +275,7 @@ def analyze_traces(
         span_count += 1
         operation = str(event.get("operation", "unknown"))
         operation_key = f"{component}/{operation}"
-        operation_durations[operation_key].append(
-            float(event["duration_ms"])
-        )
+        operation_durations[operation_key].append(float(event["duration_ms"]))
         interval = (int(event["start_unix_ns"]), int(event["end_unix_ns"]))
         operation_intervals[operation_key].append(interval)
         all_intervals.append(interval)
@@ -747,9 +743,7 @@ def analyze_host_samples(
     return {
         "row_count": row_count,
         "duration_seconds": max(timestamps) - min(timestamps) if timestamps else 0.0,
-        "metrics": {
-            name: summarize(series) for name, series in sorted(values.items())
-        },
+        "metrics": {name: summarize(series) for name, series in sorted(values.items())},
         "network_counter_deltas": {
             "available": network_columns_available,
             "rx_bytes": rx_bytes if network_columns_available else None,
@@ -780,8 +774,13 @@ def parse_training_console(
                 if current is not None:
                     steps.append(current)
                 current = {
-                    "step": int(step_match.group(1)),
+                    # NeMo prints the data-loader-local step number here.  When
+                    # total_steps spans multiple epochs that number restarts at
+                    # one, so use occurrence order for the run-global identity.
+                    "step": len(steps) + 1,
                     "max_steps": int(step_match.group(2)),
+                    "reported_step": int(step_match.group(1)),
+                    "reported_steps_per_epoch": int(step_match.group(2)),
                     "timing_seconds": {},
                     "throughput": {},
                     "native_throughput": {},
@@ -871,9 +870,7 @@ def parse_training_console(
             )
 
         mean_total = step["results"].get("mean_total_tokens_per_sample")
-        if isinstance(completed, (int, float)) and isinstance(
-            mean_total, (int, float)
-        ):
+        if isinstance(completed, (int, float)) and isinstance(mean_total, (int, float)):
             step["processed_tokens"] = mean_total * completed
             step["work_sources"]["processed_tokens"] = (
                 "Mean Total Tokens per Sample x completed trajectories"
@@ -881,9 +878,7 @@ def parse_training_console(
         else:
             total_seconds = step["timing_seconds"].get("total_step_time")
             aggregate_rate = step["native_throughput"].get("E2E (Tokens/sec)")
-            per_gpu_rate = step["native_throughput"].get(
-                "E2E (Tokens/sec/gpu)"
-            )
+            per_gpu_rate = step["native_throughput"].get("E2E (Tokens/sec/gpu)")
             if isinstance(total_seconds, (int, float)) and total_seconds > 0:
                 if isinstance(aggregate_rate, (int, float)):
                     step["processed_tokens"] = aggregate_rate * total_seconds
@@ -927,16 +922,10 @@ def _summarize_training_steps(
     )
     result_names = sorted({name for step in steady_steps for name in step["results"]})
     work_names = tuple(
-        name
-        for name in _WORK_NAMES
-        if any(name in step for step in steady_steps)
+        name for name in _WORK_NAMES if any(name in step for step in steady_steps)
     )
     native_throughput_names = sorted(
-        {
-            name
-            for step in steady_steps
-            for name in step.get("native_throughput", {})
-        }
+        {name for step in steady_steps for name in step.get("native_throughput", {})}
     )
     return {
         "step_count": len(steps),
@@ -1072,9 +1061,7 @@ def parse_verl_training_console(
                 )
 
             if mean_response_length is not None:
-                work["response_tokens"] = (
-                    mean_response_length * trajectories_per_step
-                )
+                work["response_tokens"] = mean_response_length * trajectories_per_step
                 work_sources["response_tokens"] = (
                     "native response_length/mean x completed trajectories"
                 )
@@ -1094,9 +1081,7 @@ def parse_verl_training_console(
                 and "response_tokens" in work
                 and "generated_tokens" in work
             ):
-                observation_tokens = (
-                    work["response_tokens"] - work["generated_tokens"]
-                )
+                observation_tokens = work["response_tokens"] - work["generated_tokens"]
                 if observation_tokens >= 0:
                     work["observation_tokens"] = observation_tokens
                     work_sources["observation_tokens"] = (
@@ -1124,17 +1109,13 @@ def parse_verl_training_console(
                     "native perf/total_num_tokens (prompt + response)"
                 )
                 if "perf/throughput" in metrics:
-                    native_throughput["perf/throughput"] = metrics[
-                        "perf/throughput"
-                    ]
+                    native_throughput["perf/throughput"] = metrics["perf/throughput"]
 
             metric_work_names = {
                 "search_count": "work/search_count",
                 "search_errors": "work/search_errors",
                 "invalid_actions": "work/invalid_actions",
-                "trajectory_wall_seconds_mean": (
-                    "work/trajectory_wall_seconds_mean"
-                ),
+                "trajectory_wall_seconds_mean": ("work/trajectory_wall_seconds_mean"),
                 "trajectory_wall_seconds_max": "work/trajectory_wall_seconds_max",
             }
             if framework == "original":
@@ -1241,15 +1222,11 @@ def parse_slime_training_console(
         rollout_seconds = timing_seconds["generation_and_agent"]
         effective_rate = metrics.get("perf/effective_tokens_per_gpu_per_sec")
         if effective_rate is not None:
-            work["generated_tokens"] = (
-                effective_rate * rollout_seconds * training_gpus
-            )
+            work["generated_tokens"] = effective_rate * rollout_seconds * training_gpus
             work_sources["generated_tokens"] = (
                 "native effective token rate x rollout time x rollout GPUs"
             )
-            native_throughput[
-                "perf/effective_tokens_per_gpu_per_sec"
-            ] = effective_rate
+            native_throughput["perf/effective_tokens_per_gpu_per_sec"] = effective_rate
             mean_generated = results.get("mean_generation_length")
             if isinstance(mean_generated, (int, float)) and not math.isclose(
                 work["generated_tokens"],
@@ -1382,6 +1359,7 @@ def analyze_step_timestamps(
     step_starts: dict[int, float] = {}
     step_completions: dict[int, float] = {}
     current_nemo_step: int | None = None
+    nemo_step_ordinal = 0
     with path.open(encoding="utf-8", errors="replace") as source:
         for line_number, raw_line in enumerate(source, start=1):
             raw_timestamp, separator, raw_message = raw_line.rstrip("\n").partition(
@@ -1406,7 +1384,10 @@ def analyze_step_timestamps(
             if framework == "nemo":
                 match = _STEP_PATTERN.search(message)
                 if match is not None:
-                    current_nemo_step = int(match.group(1))
+                    # Printed NeMo step IDs are local to each data-loader epoch
+                    # and can repeat.  Timestamp windows need run-global IDs.
+                    nemo_step_ordinal += 1
+                    current_nemo_step = nemo_step_ordinal
                     step_starts.setdefault(current_nemo_step, timestamp)
                     continue
                 if current_nemo_step is not None and "Training FLOPS:" in message:
@@ -1435,8 +1416,7 @@ def analyze_step_timestamps(
             str(step): timestamp for step, timestamp in sorted(step_starts.items())
         },
         "step_completions_unix_seconds": {
-            str(step): timestamp
-            for step, timestamp in sorted(step_completions.items())
+            str(step): timestamp for step, timestamp in sorted(step_completions.items())
         },
         "steady_step_ids": steady_steps,
         "available": False,
