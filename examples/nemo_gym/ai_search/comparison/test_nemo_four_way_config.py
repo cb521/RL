@@ -49,6 +49,13 @@ def test_campaign_config_preserves_strict_optimizer_and_order() -> None:
     assert config["policy"]["generation"]["val_temperature"] == 0.0
     assert config["policy"]["dtensor_cfg"]["offload_optimizer_during_refit"] is False
     assert config["policy"]["dtensor_cfg"]["offload_model_during_refit"] is False
+    generation = config["policy"]["generation"]
+    assert generation["vllm_cfg"]["enforce_eager"] is False
+    assert generation["vllm_kwargs"]["compilation_config"] == {
+        "backend": "eager",
+        "cudagraph_mode": "FULL_DECODE_ONLY",
+        "cudagraph_capture_sizes": list(range(1, 11)),
+    }
 
 
 def test_performance_overrides_resolve_to_one_update_per_outer_step() -> None:
