@@ -19,7 +19,7 @@ import sys
 import types
 from copy import deepcopy
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import ray
@@ -141,6 +141,61 @@ basic_dtensor_test_config: PolicyConfig = {
     "make_sequence_length_divisible_by": 1,
     "generation": deepcopy(basic_vllm_test_config),
 }
+
+
+@pytest.mark.asyncio
+async def test_async_worker_gpu_profiling_awaits_collective_rpc():
+    worker = object.__new__(VllmAsyncGenerationWorkerImpl)
+    worker.llm = MagicMock()
+    worker.llm.collective_rpc = AsyncMock()
+
+    with (
+        patch.object(torch.cuda.profiler, "start") as mock_start,
+        patch.object(torch.cuda.profiler, "stop") as mock_stop,
+    ):
+        await worker.start_gpu_profiling_async()
+        await worker.stop_gpu_profiling_async()
+
+    mock_start.assert_called_once_with()
+    mock_stop.assert_called_once_with()
+    assert worker.llm.collective_rpc.await_args_list == [
+        (("start_gpu_profiling",), {"args": ()}),
+        (("stop_gpu_profiling",), {"args": ()}),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("async_engine", "start_method", "stop_method"),
+    [
+        (False, "start_gpu_profiling", "stop_gpu_profiling"),
+        (True, "start_gpu_profiling_async", "stop_gpu_profiling_async"),
+    ],
+)
+def test_vllm_generation_gpu_profiling_dispatch(
+    async_engine, start_method, stop_method
+):
+    generation = object.__new__(VllmGeneration)
+    generation.cfg = {"vllm_cfg": {"async_engine": async_engine}}
+    generation.worker_group = MagicMock()
+    generation.worker_group.run_all_workers_single_data.side_effect = [
+        ["start-ref"],
+        ["stop-ref"],
+    ]
+
+    with patch(
+        "nemo_rl.models.generation.vllm.vllm_generation.ray.get"
+    ) as mock_ray_get:
+        generation.start_gpu_profiling()
+        generation.stop_gpu_profiling()
+
+    assert generation.worker_group.run_all_workers_single_data.call_args_list == [
+        ((start_method,), {}),
+        ((stop_method,), {}),
+    ]
+    assert mock_ray_get.call_args_list == [
+        ((["start-ref"],), {}),
+        ((["stop-ref"],), {}),
+    ]
 
 
 def test_context_capped_max_new_tokens():
@@ -356,6 +411,13 @@ class _FakeFastAPIApp:
 
         return decorator
 
+    def get(self, path, **_kwargs):
+        def decorator(func):
+            self.routes.append((path, func))
+            return func
+
+        return decorator
+
 
 def test_vllm_async_http_server_loads_reasoning_parser_plugin(monkeypatch):
     (
@@ -369,6 +431,7 @@ def test_vllm_async_http_server_loads_reasoning_parser_plugin(monkeypatch):
         "temperature": 1.0,
         "top_p": 1.0,
         "vllm_cfg": {
+            "enable_vllm_metrics_logger": True,
             "tool_parser_plugin": "/plugins/tool_parser.py",
             "reasoning_parser_plugin": "/plugins/reasoning_parser.py",
             "http_server_serving_chat_kwargs": {
@@ -391,6 +454,7 @@ def test_vllm_async_http_server_loads_reasoning_parser_plugin(monkeypatch):
         "/plugins/reasoning_parser.py"
     )
     assert openai_serving_chat.instances[0].kwargs["reasoning_parser"] == "nano_v3"
+    assert any(path == "/metrics" for path, _route in app.routes)
     # make sure that the config attribute does not leak into `http_server_serving_chat_kwargs`
     assert "reasoning_parser_plugin" not in openai_serving_chat.instances[0].kwargs
 

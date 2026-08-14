@@ -95,10 +95,13 @@ def maybe_gpu_profile_step(policy: ProfilablePolicy, step: int):
             policy.__NRL_PROFILE_STARTED = True
 
             def stop_profiler_on_exit():
+                if not getattr(policy, "__NRL_PROFILE_STARTED", False):
+                    return
                 rich.print(
                     f"[bold red]Stopping GPU profiling on exit for {policy} for step {step}[/bold red]"
                 )
                 policy.stop_gpu_profiling()
+                policy.__NRL_PROFILE_STARTED = False
 
             atexit.register(stop_profiler_on_exit)
     else:

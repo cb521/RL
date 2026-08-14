@@ -15,10 +15,13 @@
 import logging
 import shutil
 import tempfile
+import threading
+import time
 from unittest.mock import MagicMock, call, patch
 
 import pytest
 import torch
+from wandb import Histogram
 
 from nemo_rl.utils.logger import (
     Logger,
@@ -192,6 +195,18 @@ class TestTensorboardLogger:
         assert mock_writer.add_scalar.call_count == 2
         mock_writer.add_scalar.assert_any_call("train/loss", 0.5, 10)
         mock_writer.add_scalar.assert_any_call("train/accuracy", 0.8, 10)
+
+    @patch("nemo_rl.utils.logger.SummaryWriter")
+    def test_log_metrics_writes_wandb_histogram(self, mock_summary_writer, temp_dir):
+        """Pre-binned rollout histograms remain available in TensorBoard."""
+        logger = TensorboardLogger({}, log_dir=temp_dir)
+
+        logger.log_metrics({"reward/histogram": Histogram([0.0, 0.5, 1.0])}, step=4)
+
+        kwargs = mock_summary_writer.return_value.add_histogram_raw.call_args.kwargs
+        assert kwargs["global_step"] == 4
+        assert kwargs["num"] == 3
+        assert len(kwargs["bucket_limits"]) == len(kwargs["bucket_counts"])
 
     @patch("nemo_rl.utils.logger.SummaryWriter")
     def test_log_hyperparams(self, mock_summary_writer, temp_dir):
@@ -508,6 +523,23 @@ class TestSwanlabLogger:
         mock_run.log.assert_called_once_with(expected_metrics, step=step)
 
     @patch("nemo_rl.utils.logger.swanlab")
+    def test_log_metrics_converts_wandb_histogram(self, mock_swanlab):
+        """SwanLab receives a native ECharts bar instead of a W&B object."""
+        chart = MagicMock()
+        chart.add_xaxis.return_value = chart
+        chart.add_yaxis.return_value = chart
+        mock_swanlab.echarts.Bar.return_value = chart
+        logger = SwanlabLogger({})
+
+        logger.log_metrics({"reward/histogram": Histogram([0.0, 0.5, 1.0])}, step=4)
+
+        logged_metrics = mock_swanlab.init.return_value.log.call_args.args[0]
+        assert logged_metrics == {"reward/histogram": chart}
+        mock_swanlab.echarts.Bar.assert_called_once_with()
+        assert len(chart.add_xaxis.call_args.args[0]) == 64
+        assert sum(chart.add_yaxis.call_args.args[1]) == 3
+
+    @patch("nemo_rl.utils.logger.swanlab")
     def test_log_metrics_with_step_metric(self, mock_swanlab):
         """Test logging metrics with a step metric to SwanlabLogger."""
         cfg = {}
@@ -563,6 +595,74 @@ class TestSwanlabLogger:
         # Check that config.update was called with params
         mock_run = mock_swanlab.init.return_value
         mock_run.config.update.assert_called_once_with(params, allow_val_change=True)
+
+    @patch("nemo_rl.utils.logger.swanlab")
+    def test_background_writes_run_on_owner_thread(self, mock_swanlab):
+        """SwanLab local storage must only be written by its creator thread."""
+        logger = SwanlabLogger({})
+        owner_thread_id = threading.get_ident()
+        state_lock = threading.Lock()
+        active_writes = 0
+        peak_writes = 0
+        write_thread_ids = []
+
+        def record_write(*args, **kwargs):
+            del args, kwargs
+            nonlocal active_writes, peak_writes
+            with state_lock:
+                active_writes += 1
+                peak_writes = max(peak_writes, active_writes)
+                write_thread_ids.append(threading.get_ident())
+            time.sleep(0.01)
+            with state_lock:
+                active_writes -= 1
+
+        mock_run = mock_swanlab.init.return_value
+        mock_run.log.side_effect = record_write
+        mock_run.config.update.side_effect = record_write
+
+        def background_write(index):
+            if index % 2 == 0:
+                logger.log_metrics({f"loss_{index}": 1.0}, step=index)
+            else:
+                logger.log_hyperparams({f"seed_{index}": 42})
+
+        threads = [
+            threading.Thread(target=background_write, args=(index,))
+            for index in range(8)
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        mock_run.log.assert_not_called()
+        mock_run.config.update.assert_not_called()
+
+        logger.log_metrics({"owner": 1.0}, step=8)
+
+        assert peak_writes == 1
+        assert len(write_thread_ids) == 9
+        assert set(write_thread_ids) == {owner_thread_id}
+        assert mock_run.log.call_count == 5
+        assert mock_run.config.update.call_count == 4
+
+    @patch("nemo_rl.utils.logger.swanlab")
+    def test_finish_flushes_background_writes(self, mock_swanlab):
+        """Queued monitoring metrics are not lost when training exits."""
+        logger = SwanlabLogger({})
+        thread = threading.Thread(
+            target=lambda: logger.log_metrics({"gpu_util": 0.5}, step=3)
+        )
+        thread.start()
+        thread.join()
+
+        mock_run = mock_swanlab.init.return_value
+        mock_run.log.assert_not_called()
+        logger.finish()
+        mock_run.log.assert_called_once_with({"gpu_util": 0.5}, step=3)
+        mock_swanlab.finish.assert_called_once_with()
+        assert logger.run is None
 
 
 class TestMLflowLogger:
@@ -1523,6 +1623,28 @@ class TestLogger:
         temp_dir = tempfile.mkdtemp()
         yield temp_dir
         shutil.rmtree(temp_dir)
+
+    def test_finish_stops_gpu_monitor_before_backends(self, temp_dir):
+        logger = Logger(
+            {
+                "wandb_enabled": False,
+                "swanlab_enabled": False,
+                "tensorboard_enabled": False,
+                "mlflow_enabled": False,
+                "monitor_gpus": False,
+                "log_dir": temp_dir,
+            }
+        )
+        gpu_monitor = MagicMock()
+        backend = MagicMock()
+        logger.gpu_monitor = gpu_monitor
+        logger.loggers = [backend]
+
+        logger.finish()
+
+        gpu_monitor.stop.assert_called_once_with()
+        backend.finish.assert_called_once_with()
+        assert logger.gpu_monitor is None
 
     @patch("nemo_rl.utils.logger.WandbLogger")
     @patch("nemo_rl.utils.logger.TensorboardLogger")

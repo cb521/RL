@@ -22,6 +22,7 @@ import subprocess
 import threading
 import time
 from abc import ABC, abstractmethod
+from collections import deque
 from typing import Any, Callable, Mapping, NotRequired, Optional, TypedDict
 
 import mlflow
@@ -39,6 +40,7 @@ from rich.console import Console
 from rich.logging import RichHandler
 from rich.panel import Panel
 from torch.utils.tensorboard import SummaryWriter
+from wandb import Histogram as WandbHistogram
 
 from nemo_rl.data.interfaces import LLMMessageLogType
 from nemo_rl.distributed.batched_data_dict import BatchedDataDict
@@ -175,6 +177,10 @@ class TensorboardLogger(LoggerInterface):
             if prefix:
                 name = f"{prefix}/{name}"
 
+            if isinstance(value, WandbHistogram):
+                self._log_wandb_histogram(value, step, name)
+                continue
+
             scalar = self._coerce_to_scalar(value)
             if scalar is None:
                 print(
@@ -189,9 +195,35 @@ class TensorboardLogger(LoggerInterface):
                 print(f"Warning: Failed to log metric '{name}' to TensorBoard: {e}")
                 continue
 
+    def _log_wandb_histogram(
+        self, histogram: WandbHistogram, step: int, name: str
+    ) -> None:
+        """Write an already-binned W&B histogram to TensorBoard."""
+        counts = np.asarray(histogram.histogram, dtype=np.float64)
+        bins = np.asarray(histogram.bins, dtype=np.float64)
+        if bins.size != counts.size + 1:
+            print(
+                f"Warning: Skipping malformed histogram '{name}' for TensorBoard "
+                f"({counts.size} counts, {bins.size} bin edges)"
+            )
+            return
+
+        centers = (bins[:-1] + bins[1:]) / 2
+        self.writer.add_histogram_raw(
+            name,
+            min=float(bins[0]),
+            max=float(bins[-1]),
+            num=int(counts.sum()),
+            sum=float(np.dot(counts, centers)),
+            sum_squares=float(np.dot(counts, centers**2)),
+            bucket_limits=bins[1:].tolist(),
+            bucket_counts=counts.tolist(),
+            global_step=step,
+        )
+
     def log_histogram(self, histogram: list[Any], step: int, name: str) -> None:
         """Log histogram metrics to Tensorboard."""
-        return
+        self.writer.add_histogram(name, histogram, step)
 
     def log_hyperparams(self, params: Mapping[str, Any]) -> None:
         """Log hyperparameters to Tensorboard.
@@ -442,10 +474,38 @@ class SwanlabLogger(LoggerInterface):
             cfg (SwanlabConfig): Configuration for the Swanlab run (e.g., project and name).
             log_dir (Optional[str]): Optional offline log directory passed to Swanlab's init.
         """
+        # SwanLab local creates its SQLite/Peewee state on this thread. Calls
+        # from the Ray GPU-monitor thread fail even when they do not overlap a
+        # main-thread call, so background writes are queued for the owner.
+        self._owner_thread_id = threading.get_ident()
+        self._write_lock = threading.RLock()
+        self._pending_writes: deque[Callable[[], None]] = deque()
         self.run = swanlab.init(**cfg, logdir=log_dir)
         print(
             f"Initialized SwanlabLogger for project {cfg.get('project')}, run {cfg.get('name')} (with offline logdir={log_dir})"
         )
+
+    def _write_on_owner_thread(self, write: Callable[[], None]) -> None:
+        """Run SwanLab writes on the thread that initialized its local store."""
+        with self._write_lock:
+            if threading.get_ident() != self._owner_thread_id:
+                self._pending_writes.append(write)
+                return
+
+            while self._pending_writes:
+                self._pending_writes.popleft()()
+            write()
+
+    def finish(self) -> None:
+        """Flush writes queued by monitoring threads before logger teardown."""
+        if threading.get_ident() != self._owner_thread_id:
+            raise RuntimeError("SwanlabLogger.finish() must run on its owner thread")
+        with self._write_lock:
+            while self._pending_writes:
+                self._pending_writes.popleft()()
+            if self.run is not None:
+                swanlab.finish()
+                self.run = None
 
     def log_metrics(
         self,
@@ -469,7 +529,21 @@ class SwanlabLogger(LoggerInterface):
                 for k, v in metrics.items()
             }
 
-        self.run.log(metrics, step=step)
+        metrics = {
+            name: self._to_swanlab_value(value) for name, value in metrics.items()
+        }
+        self._write_on_owner_thread(lambda: self.run.log(metrics, step=step))
+
+    @staticmethod
+    def _to_swanlab_value(value: Any) -> Any:
+        """Convert W&B-only metric objects to SwanLab-native equivalents."""
+        if not isinstance(value, WandbHistogram):
+            return value
+
+        counts = [int(count) for count in value.histogram]
+        bins = [float(edge) for edge in value.bins]
+        labels = [f"{left:.4g}–{right:.4g}" for left, right in zip(bins[:-1], bins[1:])]
+        return swanlab.echarts.Bar().add_xaxis(labels).add_yaxis("count", counts)
 
     def log_hyperparams(self, params: Mapping[str, Any]) -> None:
         """Update the Swanlab run configuration with the provided hyperparameters.
@@ -477,7 +551,10 @@ class SwanlabLogger(LoggerInterface):
         Parameters:
             params (Mapping[str, Any]): Mapping of hyperparameter names to values to store in the run configuration.
         """
-        self.run.config.update(params, allow_val_change=True)
+        params = dict(params)
+        self._write_on_owner_thread(
+            lambda: self.run.config.update(params, allow_val_change=True)
+        )
 
     def log_plot(self, figure: plt.Figure, step: int, name: str) -> None:
         """Log a plot to swanlab.
@@ -486,11 +563,14 @@ class SwanlabLogger(LoggerInterface):
             figure: Matplotlib figure to log
             step: Global step value
         """
-        self.run.log({name: swanlab.Image(figure)}, step=step)
+        self._write_on_owner_thread(
+            lambda: self.run.log({name: swanlab.Image(figure)}, step=step)
+        )
 
     def log_histogram(self, histogram: list[Any], step: int, name: str) -> None:
         """Log histogram metrics to swanlab."""
-        return
+        value = self._to_swanlab_value(WandbHistogram(histogram))
+        self._write_on_owner_thread(lambda: self.run.log({name: value}, step=step))
 
 
 class GpuMetricSnapshot(TypedDict):
@@ -1063,6 +1143,9 @@ class Logger(LoggerInterface):
 
     def finish(self) -> None:
         """Flush and close backends that need explicit teardown (e.g. wandb)."""
+        if self.gpu_monitor:
+            self.gpu_monitor.stop()
+            self.gpu_monitor = None
         for logger in self.loggers:
             finish = getattr(logger, "finish", None)
             if callable(finish):

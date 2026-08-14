@@ -684,6 +684,12 @@ def grpo_train_sync(
                     metrics_logging_data["mean_gen_tokens_per_sample"] = (
                         rollout_metrics["mean_gen_tokens_per_sample"]
                     )
+                    metrics_logging_data["mean_env_tokens_per_sample"] = (
+                        rollout_metrics["mean_env_tokens_per_sample"]
+                    )
+                    metrics_logging_data["mean_response_tokens_per_sample"] = (
+                        rollout_metrics["mean_total_tokens_per_sample"]
+                    )
                     logger.log_metrics(rollout_metrics, total_steps + 1, prefix="train")
 
                 # ── Per-sample driver compute on slice ────────────────
@@ -826,7 +832,8 @@ def grpo_train_sync(
                     # writeback.
                     select_fields = ["generation_logprobs", "token_mask"]
                     if compute_prev:
-                        policy.get_logprobs_from_meta(meta, timer=timer)
+                        with timer.time("policy_logprobs"):
+                            policy.get_logprobs_from_meta(meta, timer=timer)
                         select_fields.append("prev_logprobs")
                     else:
                         print(
@@ -834,10 +841,11 @@ def grpo_train_sync(
                             flush=True,
                         )
                     if compute_ref:
-                        policy.get_reference_policy_logprobs_from_meta(
-                            meta,
-                            timer=timer,
-                        )
+                        with timer.time("reference_logprobs"):
+                            policy.get_reference_policy_logprobs_from_meta(
+                                meta,
+                                timer=timer,
+                            )
                         select_fields.append("reference_policy_logprobs")
 
                     # Driver pulls only the per-token columns it needs
@@ -1314,6 +1322,15 @@ def grpo_train_sync(
                 print(f"  • Avg Reward: {np.mean(rewards.numpy()):.4f}")
             print(
                 f"  • Mean Generation Length: {metrics_logging_data['mean_gen_tokens_per_sample']:.4f}",
+                flush=True,
+            )
+            print(
+                f"  • Mean Observation Length: {metrics_logging_data['mean_env_tokens_per_sample']:.4f}",
+                flush=True,
+            )
+            print(
+                "  • Mean Response Sequence Length: "
+                f"{metrics_logging_data['mean_response_tokens_per_sample']:.4f}",
                 flush=True,
             )
 

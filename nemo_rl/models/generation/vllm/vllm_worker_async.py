@@ -352,7 +352,7 @@ class VllmAsyncGenerationWorkerImpl(
         from typing import List, Optional, Union
 
         from fastapi import Request
-        from fastapi.responses import JSONResponse, StreamingResponse
+        from fastapi.responses import JSONResponse, Response, StreamingResponse
         from vllm.entrypoints.openai.chat_completion.protocol import (
             ChatCompletionRequest,
             ChatCompletionResponse,
@@ -787,6 +787,19 @@ class VllmAsyncGenerationWorkerImpl(
                 )
             elif isinstance(generator, TokenizeResponse):
                 return JSONResponse(content=generator.model_dump())
+
+        ########################################
+        # Native vLLM Prometheus endpoint
+        ########################################
+        if self.cfg["vllm_cfg"].get("enable_vllm_metrics_logger", False):
+            from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+
+            @app.get("/metrics", include_in_schema=False)
+            async def prometheus_metrics():
+                return Response(
+                    content=generate_latest(),
+                    headers={"Content-Type": CONTENT_TYPE_LATEST},
+                )
 
         ########################################
         # Logging
@@ -1338,6 +1351,18 @@ class VllmAsyncGenerationWorkerImpl(
             list_of_worker_results = result_or_coro
 
         return cast(list[str], list_of_worker_results)
+
+    async def start_gpu_profiling_async(self) -> None:
+        """Start GPU profiling through the async vLLM engine."""
+        torch.cuda.profiler.start()
+        if self.llm is not None:
+            await self.llm.collective_rpc("start_gpu_profiling", args=tuple())
+
+    async def stop_gpu_profiling_async(self) -> None:
+        """Stop GPU profiling through the async vLLM engine."""
+        torch.cuda.profiler.stop()
+        if self.llm is not None:
+            await self.llm.collective_rpc("stop_gpu_profiling", args=tuple())
 
     async def prepare_refit_info_async(self, state_dict_info: dict[str, Any]) -> None:
         """Async version of prepare_refit_info."""
