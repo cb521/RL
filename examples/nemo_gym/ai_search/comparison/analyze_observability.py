@@ -685,6 +685,11 @@ def analyze_host_samples(
 ) -> dict[str, Any]:
     """Summarize host memory, load, and monotonic network-counter deltas."""
     metric_columns = ("mem_total_kib", "mem_available_kib", "load_1m")
+    cgroup_columns = (
+        "cgroup_memory_current_bytes",
+        "cgroup_memory_peak_bytes",
+        "cgroup_memory_anon_bytes",
+    )
     values: dict[str, list[float]] = defaultdict(list)
     timestamps: list[float] = []
     network_points: list[tuple[float, float, float]] = []
@@ -713,6 +718,10 @@ def analyze_host_samples(
                 row_count += 1
                 for column in metric_columns:
                     values[column].append(float(parsed[column]))
+                for column in cgroup_columns:
+                    parsed_cgroup = _parse_float(row.get(column))
+                    if parsed_cgroup is not None and parsed_cgroup >= 0:
+                        values[column].append(float(parsed_cgroup))
                 values["mem_used_kib"].append(
                     float(parsed["mem_total_kib"] - parsed["mem_available_kib"])
                 )
@@ -745,6 +754,13 @@ def analyze_host_samples(
             "available": network_columns_available,
             "rx_bytes": rx_bytes if network_columns_available else None,
             "tx_bytes": tx_bytes if network_columns_available else None,
+        },
+        "cgroup_memory": {
+            "available": bool(values["cgroup_memory_current_bytes"]),
+            "semantics": (
+                "Slurm step cgroup memory; current includes charged anonymous/file "
+                "memory, peak is lifetime-high-water, anon excludes file cache"
+            ),
         },
     }
 
