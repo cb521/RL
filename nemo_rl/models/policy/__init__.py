@@ -194,6 +194,12 @@ class DTensorConfig(TypedDict):
     sequence_parallel: bool
     activation_checkpointing: bool
     cpu_offload: bool
+    # Keep Adam state on GPU while a colocated generation engine owns the model
+    # weights/KV cache. Defaults to True (offload) for backward compatibility.
+    offload_optimizer_during_refit: NotRequired[bool]
+    # Keep policy parameters on GPU while a colocated generation engine owns
+    # its model weights/KV cache. Defaults to True (offload) for compatibility.
+    offload_model_during_refit: NotRequired[bool]
     custom_parallel_plan: NotRequired[str | None]
     defer_fsdp_grad_sync: NotRequired[bool]
     # MoE parallelizer config

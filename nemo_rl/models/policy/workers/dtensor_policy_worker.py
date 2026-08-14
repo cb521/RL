@@ -266,6 +266,12 @@ class DTensorPolicyWorkerImpl(
         model_name = self.cfg["model_name"]
 
         self.cpu_offload = self.cfg["dtensor_cfg"]["cpu_offload"]
+        self.offload_optimizer_during_refit = self.cfg["dtensor_cfg"].get(
+            "offload_optimizer_during_refit", True
+        )
+        self.offload_model_during_refit = self.cfg["dtensor_cfg"].get(
+            "offload_model_during_refit", True
+        )
         self.offload_optimizer_for_logprob = self.cfg["offload_optimizer_for_logprob"]
         self.max_grad_norm = self.cfg["max_grad_norm"]
 
@@ -1977,10 +1983,10 @@ class DTensorPolicyWorkerImpl(
     @torch.no_grad()
     @wrap_with_nvtx_name("dtensor_policy_worker/offload_before_refit")
     def offload_before_refit(self) -> None:
-        """Offload the optimizer to the CPU."""
+        """Optionally offload optimizer state before colocated weight refit."""
         self.timer.start("offload_before_refit")
         torch.randn(1).cuda()  # wake up torch allocator
-        if self.optimizer is not None:
+        if self.optimizer is not None and self.offload_optimizer_during_refit:
             self.move_optimizer_to_device("cpu")
 
         gc.collect()
@@ -1990,9 +1996,10 @@ class DTensorPolicyWorkerImpl(
     @torch.no_grad()
     @wrap_with_nvtx_name("dtensor_policy_worker/offload_after_refit")
     def offload_after_refit(self) -> None:
-        """Offload as much as possible on the CPU."""
+        """Offload model weights and, when configured, optimizer state."""
         self.timer.start("offload_after_refit")
-        self.model = self.move_to_cpu(self.model)
+        if self.offload_model_during_refit:
+            self.model = self.move_to_cpu(self.model)
         self.model.eval()
         torch.randn(1).cuda()  # wake up torch allocator
         self.offload_before_refit()  # rerun the old offload function
@@ -2001,7 +2008,7 @@ class DTensorPolicyWorkerImpl(
         allocated = torch.cuda.memory_allocated() / (1024**3)  # Convert to GB
         reserved = torch.cuda.memory_reserved() / (1024**3)  # Convert to GB
         print(
-            f"GPU Memory after optimizer offload: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved"
+            f"GPU Memory after refit offload: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved"
         )
         self.timer.stop("offload_after_refit")
 
