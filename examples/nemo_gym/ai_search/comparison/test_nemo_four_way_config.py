@@ -30,6 +30,7 @@ def _resolved(overrides: list[str] | None = None) -> dict:
 def test_campaign_config_preserves_strict_optimizer_and_order() -> None:
     config = _resolved()
     assert config["data"]["shuffle"] is False
+    assert config["loss_fn"]["force_on_policy_ratio"] is False
     assert config["grpo"]["max_num_steps"] == 500
     assert config["grpo"]["num_prompts_per_step"] == 512
     assert config["grpo"]["num_generations_per_prompt"] == 5
@@ -104,6 +105,7 @@ def test_performance_overrides_resolve_to_one_update_per_outer_step() -> None:
     assert trajectories // config["policy"]["train_global_batch_size"] == 1
     assert config["policy"]["train_micro_batch_size"] == 5
     assert config["policy"]["logprob_batch_size"] == 1
+    assert config["loss_fn"]["force_on_policy_ratio"] is False
     assert config["grpo"]["val_at_start"] is False
     assert config["grpo"]["val_at_end"] is False
     assert config["checkpointing"]["enabled"] is False

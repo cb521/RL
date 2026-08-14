@@ -7,6 +7,11 @@ data:
   # paper-reproduction recipe retains its native shuffle setting separately.
   shuffle: false
 
+loss_fn:
+  # Keep the controlled comparison aligned with current veRL: recompute the
+  # old-policy logprobs instead of forcing the rollout ratio to one.
+  force_on_policy_ratio: false
+
 policy:
   generation:
     # The original Search-R1 validation path sets do_sample=False. Keep every
