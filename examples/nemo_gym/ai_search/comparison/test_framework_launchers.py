@@ -94,6 +94,14 @@ def test_nemo_search_r1_launcher_freezes_aligned_protocol() -> None:
     assert config["policy"]["generation"] == {
         "val_temperature": 0.0,
         "val_top_p": 1.0,
+        "vllm_cfg": {"enforce_eager": False},
+        "vllm_kwargs": {
+            "compilation_config": {
+                "backend": "eager",
+                "cudagraph_mode": "FULL_DECODE_ONLY",
+                "cudagraph_capture_sizes": list(range(1, 11)),
+            }
+        },
     }
 
 
