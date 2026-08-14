@@ -32,6 +32,10 @@ class VllmSpecificArgs(TypedDict):
     # Additional arguments for vLLM inserted by nemo rl based on the context of when vllm is used
     skip_tokenizer_init: bool
     async_engine: bool
+    # Optional vLLM sleep-level override for colocated training. Level 0 only
+    # pauses scheduling, level 1 preserves weights on CPU, and level 2 discards
+    # weights. When absent, vLLM uses its native level-1 default.
+    sleep_level: NotRequired[Literal[0, 1, 2]]
     load_format: NotRequired[str]
     precision: NotRequired[str]
     # Whether vLLM returns logprobs before or after generation-time logit

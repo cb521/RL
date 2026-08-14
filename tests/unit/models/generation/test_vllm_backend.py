@@ -16,6 +16,7 @@
 # inside the test bodies (which are marked @pytest.mark.vllm). This keeps the
 # module collectable in the non-vllm unit lane, where these tests are deselected.
 
+import asyncio
 import contextlib
 import json
 from types import SimpleNamespace
@@ -245,6 +246,66 @@ async def test_async_weight_updates_check_every_internal_worker(
     worker.llm = SimpleNamespace(collective_rpc=AsyncMock(return_value=worker_results))
 
     assert await getattr(worker, method_name)() is expected
+
+
+@pytest.mark.vllm
+@pytest.mark.parametrize("configured_level", [None, 0, 1, 2])
+def test_sync_sleep_uses_configured_vllm_sleep_level(monkeypatch, configured_level):
+    from nemo_rl.models.generation.vllm.vllm_worker import VllmGenerationWorkerImpl
+
+    vllm_cfg = {"async_engine": False}
+    if configured_level is not None:
+        vllm_cfg["sleep_level"] = configured_level
+    worker = VllmGenerationWorkerImpl.__new__(VllmGenerationWorkerImpl)
+    worker.cfg = {"vllm_cfg": vllm_cfg}
+    worker.llm = MagicMock()
+    monkeypatch.setattr(
+        "nemo_rl.models.generation.vllm.vllm_worker.gc.collect", lambda: None
+    )
+    monkeypatch.setattr(
+        "nemo_rl.models.generation.vllm.vllm_worker.torch.cuda.empty_cache",
+        lambda: None,
+    )
+
+    worker.sleep()
+
+    if configured_level is None:
+        worker.llm.sleep.assert_called_once_with()
+    else:
+        worker.llm.sleep.assert_called_once_with(level=configured_level)
+
+
+@pytest.mark.vllm
+@pytest.mark.parametrize("configured_level", [None, 0, 1, 2])
+def test_async_sleep_uses_configured_vllm_sleep_level(monkeypatch, configured_level):
+    from nemo_rl.models.generation.vllm.vllm_worker_async import (
+        VllmAsyncGenerationWorkerImpl,
+    )
+
+    vllm_cfg = {"async_engine": True}
+    if configured_level is not None:
+        vllm_cfg["sleep_level"] = configured_level
+    worker = VllmAsyncGenerationWorkerImpl.__new__(VllmAsyncGenerationWorkerImpl)
+    worker.cfg = {"vllm_cfg": vllm_cfg}
+    worker.llm = SimpleNamespace(
+        reset_prefix_cache=AsyncMock(),
+        reset_mm_cache=AsyncMock(),
+        sleep=AsyncMock(),
+    )
+    monkeypatch.setattr(
+        "nemo_rl.models.generation.vllm.vllm_worker_async.gc.collect", lambda: None
+    )
+    monkeypatch.setattr(
+        "nemo_rl.models.generation.vllm.vllm_worker_async.torch.cuda.empty_cache",
+        lambda: None,
+    )
+
+    asyncio.run(worker.sleep_async())
+
+    if configured_level is None:
+        worker.llm.sleep.assert_awaited_once_with()
+    else:
+        worker.llm.sleep.assert_awaited_once_with(level=configured_level)
 
 
 @pytest.mark.vllm

@@ -19,6 +19,7 @@ num_gpus="${SEARCH_R1_NUM_GPUS:-8}"
 allow_nonformal_preflight="${SEARCH_R1_ALLOW_NONFORMAL_PREFLIGHT:-0}"
 fast_iteration="${SEARCH_R1_FAST_ITERATION:-0}"
 workload_mode="${SEARCH_R1_WORKLOAD_MODE:-training}"
+runtime_profile="${SEARCH_R1_NEMO_RUNTIME_PROFILE:-discard}"
 controlled_data_manifest="${SEARCH_R1_CONTROLLED_DATA_MANIFEST:-}"
 
 expected_model_revision=d149729398750b98c0af14eb82c78cfe92750796
@@ -102,6 +103,34 @@ case "${workload_mode}" in
     ;;
   *)
     echo "SEARCH_R1_WORKLOAD_MODE must be training or controlled, not ${workload_mode}." >&2
+    exit 1
+    ;;
+esac
+
+case "${runtime_profile}" in
+  discard)
+    # Match the current veRL comparison configuration: discard stale rollout
+    # weights and KV cache because the next wake is followed by a full refit.
+    vllm_sleep_level=2
+    vllm_gpu_memory_utilization=config-default
+    ;;
+  offload)
+    # Preserve rollout weights on CPU while releasing their GPU allocation.
+    vllm_sleep_level=1
+    vllm_gpu_memory_utilization=config-default
+    ;;
+  resident)
+    if [[ "${run_mode}" != performance || "${num_gpus}" != "4" ]]; then
+      echo "SEARCH_R1_NEMO_RUNTIME_PROFILE=resident is restricted to four-GPU performance diagnostics." >&2
+      exit 1
+    fi
+    # Keep enough KV capacity for ten 4K-context trajectories per engine while
+    # leaving more training headroom than the initial 15% screening candidate.
+    vllm_sleep_level=0
+    vllm_gpu_memory_utilization=0.13
+    ;;
+  *)
+    echo "SEARCH_R1_NEMO_RUNTIME_PROFILE must be discard, offload, or resident, not ${runtime_profile}." >&2
     exit 1
     ;;
 esac
@@ -270,6 +299,10 @@ fi
     "${rollout_request_temperature}"
   printf 'weights_frozen_by_zero_lr=%s\n' "${weights_frozen}"
   printf 'rollout_batch_invariant=%s\n' "${rollout_batch_invariant}"
+  printf 'nemo_runtime_profile=%s\n' "${runtime_profile}"
+  printf 'vllm_sleep_level=%s\n' "${vllm_sleep_level}"
+  printf 'vllm_gpu_memory_utilization=%s\n' "${vllm_gpu_memory_utilization}"
+  printf 'vllm_max_num_batched_tokens=8192\n'
   printf 'source_commit=%s\n' "${nemo_commit}"
   printf 'model_revision=%s\n' "${expected_model_revision}"
   printf 'train_sha256=%s\neval_sha256=%s\n' "${expected_train_sha256}" "${expected_eval_sha256}"
@@ -329,6 +362,14 @@ command=(
 if [[ "${workload_mode}" == controlled ]]; then
   # Forward the flag into vLLM's inner workers as well as the outer Ray actor.
   command+=(+policy.generation.vllm_cfg.env_vars.VLLM_BATCH_INVARIANT=1)
+fi
+if [[ "${runtime_profile}" != discard ]]; then
+  command+=("policy.generation.vllm_cfg.sleep_level=${vllm_sleep_level}")
+fi
+if [[ "${runtime_profile}" == resident ]]; then
+  command+=(
+    policy.generation.vllm_cfg.gpu_memory_utilization=0.13
+  )
 fi
 
 if [[ "${SEARCH_R1_PRINT_COMMAND:-0}" == "1" ]]; then
