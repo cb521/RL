@@ -10,8 +10,11 @@ import argparse
 import csv
 import json
 import math
+import statistics
+from datetime import datetime
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 
 FRAMEWORKS = ("original", "current", "slime", "nemo")
@@ -31,6 +34,7 @@ STAGE_NAMES = (
     "7_training_and_data_preparation",
     "8_actor_forward_backward_grad_sync_optimizer",
 )
+LOCAL_TIMEZONE = ZoneInfo("Asia/Shanghai")
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -111,6 +115,154 @@ def _required(value: float | None, name: str) -> float:
     if value is None or not math.isfinite(value):
         raise ValueError(f"Missing required timing metric: {name}")
     return value
+
+
+def _percentile(values: list[float], percentile: float) -> float:
+    if not values:
+        raise ValueError("Cannot calculate a percentile from no samples")
+    ordered = sorted(values)
+    position = (len(ordered) - 1) * percentile
+    lower = math.floor(position)
+    upper = math.ceil(position)
+    if lower == upper:
+        return ordered[lower]
+    return ordered[lower] * (upper - position) + ordered[upper] * (
+        position - lower
+    )
+
+
+def _resource_usage(run_dir: Path, report: dict[str, Any]) -> dict[str, Any]:
+    """Summarize host RAM and VRAM over the exact steady measurement window."""
+    window = report.get("measurement_window", {})
+    start = float(window.get("start_unix_seconds", 0.0))
+    end = float(window.get("end_unix_seconds", 0.0))
+    if not window.get("available") or end <= start:
+        raise ValueError(f"Missing measurement window for {run_dir}")
+
+    gpu_samples: list[tuple[float, str, float, float]] = []
+    with (run_dir / "gpu.csv").open(encoding="utf-8", newline="") as source:
+        for row in csv.DictReader(source):
+            timestamp = datetime.strptime(
+                row["timestamp"].strip(), "%Y/%m/%d %H:%M:%S.%f"
+            ).replace(tzinfo=LOCAL_TIMEZONE).timestamp()
+            if start <= timestamp <= end:
+                gpu_samples.append(
+                    (
+                        timestamp,
+                        row["uuid"].strip(),
+                        float(row["memory_used_mib"]),
+                        float(row["memory_total_mib"]),
+                    )
+                )
+    if not gpu_samples:
+        raise ValueError(f"No steady GPU samples in {run_dir / 'gpu.csv'}")
+
+    used_mib = [sample[2] for sample in gpu_samples]
+    capacities_mib = {sample[3] for sample in gpu_samples}
+    if len(capacities_mib) != 1:
+        raise ValueError(f"Inconsistent GPU capacities in {run_dir / 'gpu.csv'}")
+    capacity_mib = capacities_mib.pop()
+    by_gpu: dict[str, list[float]] = {}
+    by_second: dict[int, dict[str, float]] = {}
+    for timestamp, uuid, used, _ in gpu_samples:
+        by_gpu.setdefault(uuid, []).append(used)
+        by_second.setdefault(round(timestamp), {})[uuid] = used
+    synchronized_totals = [
+        sum(values.values())
+        for values in by_second.values()
+        if len(values) == len(by_gpu)
+    ]
+
+    host_samples: list[tuple[float, float]] = []
+    cgroup_current_window: list[float] = []
+    cgroup_peak_window: list[float] = []
+    cgroup_anon_window: list[float] = []
+    with (run_dir / "host.csv").open(encoding="utf-8", newline="") as source:
+        for row in csv.DictReader(source):
+            timestamp = datetime.fromisoformat(row["timestamp"]).timestamp()
+            used_kib = float(row["mem_total_kib"]) - float(
+                row["mem_available_kib"]
+            )
+            host_samples.append((timestamp, used_kib))
+            if start <= timestamp <= end:
+                for column, destination in (
+                    ("cgroup_memory_current_bytes", cgroup_current_window),
+                    ("cgroup_memory_peak_bytes", cgroup_peak_window),
+                    ("cgroup_memory_anon_bytes", cgroup_anon_window),
+                ):
+                    raw_value = row.get(column)
+                    if raw_value not in (None, "") and float(raw_value) >= 0:
+                        destination.append(float(raw_value))
+    host_window_kib = [
+        used for timestamp, used in host_samples if start <= timestamp <= end
+    ]
+    if not host_window_kib:
+        raise ValueError(f"No steady host samples in {run_dir / 'host.csv'}")
+    initial_samples = [used for _, used in host_samples[:10]]
+    if not initial_samples:
+        raise ValueError(f"No initial host samples in {run_dir / 'host.csv'}")
+    host_baseline_kib = statistics.median(initial_samples)
+
+    mib_to_gib = 1.0 / 1024.0
+    kib_to_gib = 1.0 / 1024.0 / 1024.0
+    peak_mib = max(used_mib)
+    return {
+        "measurement_window_seconds": end - start,
+        "gpu": {
+            "sample_interval_note": "external nvidia-smi samples at about one-second cadence",
+            "sample_count": len(used_mib),
+            "gpu_count": len(by_gpu),
+            "capacity_per_card_gib": capacity_mib * mib_to_gib,
+            "mean_used_per_card_gib": statistics.mean(used_mib) * mib_to_gib,
+            "p95_used_per_card_gib": _percentile(used_mib, 0.95) * mib_to_gib,
+            "observed_peak_used_per_card_gib": peak_mib * mib_to_gib,
+            "observed_headroom_per_card_gib": (capacity_mib - peak_mib)
+            * mib_to_gib,
+            "observed_peak_capacity_percent": peak_mib / capacity_mib * 100.0,
+            "observed_peak_total_four_cards_gib": (
+                max(synchronized_totals) * mib_to_gib
+                if synchronized_totals
+                else None
+            ),
+            "observed_peak_by_card_gib": {
+                uuid: max(values) * mib_to_gib for uuid, values in by_gpu.items()
+            },
+        },
+        "host": {
+            "confidence": "node-level-estimate",
+            "method": "node MemTotal-MemAvailable; subtract median of first ten collector samples",
+            "sample_count": len(host_window_kib),
+            "initial_baseline_gib": host_baseline_kib * kib_to_gib,
+            "mean_node_used_gib": statistics.mean(host_window_kib) * kib_to_gib,
+            "peak_node_used_gib": max(host_window_kib) * kib_to_gib,
+            "mean_increment_over_initial_gib": (
+                statistics.mean(host_window_kib) - host_baseline_kib
+            )
+            * kib_to_gib,
+            "peak_increment_over_initial_gib": (
+                max(host_window_kib) - host_baseline_kib
+            )
+            * kib_to_gib,
+            "job_cgroup": {
+                "available": bool(cgroup_current_window),
+                "steady_current_peak_gib": (
+                    max(cgroup_current_window) / 1024**3
+                    if cgroup_current_window
+                    else None
+                ),
+                "steady_anon_peak_gib": (
+                    max(cgroup_anon_window) / 1024**3
+                    if cgroup_anon_window
+                    else None
+                ),
+                "lifetime_peak_seen_in_window_gib": (
+                    max(cgroup_peak_window) / 1024**3
+                    if cgroup_peak_window
+                    else None
+                ),
+            },
+        },
+    }
 
 
 def _retrieval_evidence(report: dict[str, Any]) -> dict[str, float | int | None]:
@@ -610,6 +762,10 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         framework: _reconciliation(clean_reports[framework], breakdowns[framework])
         for framework in FRAMEWORKS
     }
+    resources = {
+        framework: _resource_usage(Path(clean_dirs[framework]), clean_reports[framework])
+        for framework in FRAMEWORKS
+    }
     headline = {}
     for framework in FRAMEWORKS:
         report = clean_reports[framework]
@@ -667,6 +823,7 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         ),
         "headline": headline,
         "breakdowns": breakdowns,
+        "resources": resources,
         "reconciliation": reconciliations,
         "nsight": {framework: _top_nsys(nsys[framework]) for framework in FRAMEWORKS},
         "nemo_policy_copy_evidence": _nemo_policy_copy_evidence(nsys["nemo"]),
@@ -678,6 +835,7 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         "interpretation_boundaries": [
             "Stage 3 is nested diagnostic evidence and is never added to the step total.",
             "Clean timers determine performance; profile timers mix profiler overhead and stochastic work differences.",
+            "VRAM values are externally observed at about one-second cadence; host-RAM increments are node-level estimates, not exact process RSS.",
             "SLIME Nsight covers only rank-0 training actor; current veRL rollout engine is not covered.",
             "A 4xH20 diagnostic does not establish an 8-GPU result or model-quality ranking.",
         ],
@@ -727,6 +885,38 @@ def write_outputs(report: dict[str, Any], output_dir: Path) -> None:
                     [framework, name, f"{value['seconds']:.9f}", f"{value['percent']:.9f}"]
                 )
 
+    with (output_dir / "resource-usage.tsv").open(
+        "w", encoding="utf-8", newline=""
+    ) as output:
+        writer = csv.writer(output, delimiter="\t", lineterminator="\n")
+        writer.writerow(
+            [
+                "framework",
+                "gpu_mean_used_per_card_gib",
+                "gpu_p95_used_per_card_gib",
+                "gpu_observed_peak_per_card_gib",
+                "gpu_observed_headroom_per_card_gib",
+                "host_mean_increment_over_initial_gib",
+                "host_peak_increment_over_initial_gib",
+                "host_confidence",
+            ]
+        )
+        for framework in FRAMEWORKS:
+            gpu = report["resources"][framework]["gpu"]
+            host = report["resources"][framework]["host"]
+            writer.writerow(
+                [
+                    framework,
+                    f"{gpu['mean_used_per_card_gib']:.9f}",
+                    f"{gpu['p95_used_per_card_gib']:.9f}",
+                    f"{gpu['observed_peak_used_per_card_gib']:.9f}",
+                    f"{gpu['observed_headroom_per_card_gib']:.9f}",
+                    f"{host['mean_increment_over_initial_gib']:.9f}",
+                    f"{host['peak_increment_over_initial_gib']:.9f}",
+                    host["confidence"],
+                ]
+            )
+
     markdown = [
         "# Four-framework Search-R1 deep performance breakdown",
         "",
@@ -742,6 +932,26 @@ def write_outputs(report: dict[str, Any], output_dir: Path) -> None:
         markdown.append(
             f"| {DISPLAY[framework]} | {_fmt(value['step_seconds'])} | {_fmt(value['generated_tokens_per_step'], 0)} | {_fmt(value['generated_tokens_per_second'], 1)} | {_fmt(value['samples_per_second'])} |"
         )
+
+    markdown += [
+        "",
+        "## CPU memory and GPU memory",
+        "",
+        "The GPU values use the same three-step clean measurement window as the timing result. The peak is the capacity constraint; the mean also reflects deliberate sleep/offload phases. Host RAM is an approximate node-level increment over the first ten collector samples, because the completed jobs do not expose a reliable process-tree/cgroup peak for every framework.",
+        "",
+        "| Framework | Mean VRAM/card | Observed peak VRAM/card | Observed headroom/card | Approx. peak host-RAM increment |",
+        "|---|---:|---:|---:|---:|",
+    ]
+    for framework in FRAMEWORKS:
+        gpu = report["resources"][framework]["gpu"]
+        host = report["resources"][framework]["host"]
+        markdown.append(
+            f"| {DISPLAY[framework]} | {_fmt(gpu['mean_used_per_card_gib'], 2)} GiB | {_fmt(gpu['observed_peak_used_per_card_gib'], 2)} GiB | {_fmt(gpu['observed_headroom_per_card_gib'], 2)} GiB | {_fmt(host['peak_increment_over_initial_gib'], 2)} GiB |"
+        )
+    markdown += [
+        "",
+        "NeMo's low VRAM is not a free efficiency win: it coincides with the largest host-RAM footprint and the Nsight copy evidence below. The implementation shifts policy/optimizer state to CPU and pays for repeated transfers. Final optimized candidates must report timing, observed VRAM peak/headroom, and host-RAM peak together.",
+    ]
 
     dimensions = report["alignment"]["dimensions"]
     model_revision = dimensions["model_revision"]["values"]["nemo"]
@@ -886,6 +1096,7 @@ def write_outputs(report: dict[str, Any], output_dir: Path) -> None:
         "- Clean timers rank performance; profile runs explain behavior and mix profiler overhead with stochastic work differences.",
         "- SLIME Nsight covers only rank-0 training actor; current veRL does not cover its rollout engine.",
         "- Actual token work differs, so both per-step time and normalized work must be reported.",
+        "- VRAM is sampled externally at about one-second cadence. Host-RAM increments are node-level estimates; promoted reruns must add job-cgroup memory peaks.",
         "",
     ]
     (output_dir / "deep-breakdown.md").write_text(

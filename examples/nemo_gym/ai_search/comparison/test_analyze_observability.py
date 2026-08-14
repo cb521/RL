@@ -518,6 +518,26 @@ def test_analyze_host_samples_sums_only_monotonic_network_deltas(tmp_path) -> No
         "rx_bytes": 50.0,
         "tx_bytes": 60.0,
     }
+    assert report["cgroup_memory"]["available"] is False
+
+
+def test_analyze_host_samples_reports_job_cgroup_memory(tmp_path) -> None:
+    samples = tmp_path / "host.csv"
+    samples.write_text(
+        "timestamp,mem_total_kib,mem_available_kib,load_1m,rx_bytes,tx_bytes,"
+        "cgroup_memory_current_bytes,cgroup_memory_peak_bytes,"
+        "cgroup_memory_anon_bytes\n"
+        "2026-08-11T10:00:00-07:00,1000,800,1.0,100,200,100,110,80\n"
+        "2026-08-11T10:00:01-07:00,1000,700,2.0,150,260,200,220,160\n",
+        encoding="utf-8",
+    )
+
+    report = analyze_host_samples([samples])
+
+    assert report["cgroup_memory"]["available"] is True
+    assert report["metrics"]["cgroup_memory_current_bytes"]["max"] == 200.0
+    assert report["metrics"]["cgroup_memory_peak_bytes"]["max"] == 220.0
+    assert report["metrics"]["cgroup_memory_anon_bytes"]["max"] == 160.0
 
 
 @pytest.mark.parametrize(
