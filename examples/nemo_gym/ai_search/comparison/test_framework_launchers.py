@@ -198,7 +198,7 @@ def test_controlled_work_mode_freezes_outputs_and_records_exact_work() -> None:
             "printf 'workload_mode=%s\\nprompt_encoding=%s\\n'",
             "printf 'rollout_request_temperature=%s\\ntraining_logprob_temperature=1.0\\n'",
             "printf 'weights_frozen_by_zero_lr=%s\\n'",
-            "SEARCH_R1_WORKLOAD_MODE=controlled requires a clean performance run.",
+            "SEARCH_R1_WORKLOAD_MODE=controlled requires a clean or profile performance run.",
             "SEARCH_R1_WORKLOAD_MODE must be training or controlled",
             "SEARCH_R1_CONTROLLED_DATA_MANIFEST is required for controlled work.",
             "expected_controlled_manifest_sha256=09b4fa8a7127873c9083ff7dfa736ff087ad2c0d6b570dd6349d7bbfe6db1003",

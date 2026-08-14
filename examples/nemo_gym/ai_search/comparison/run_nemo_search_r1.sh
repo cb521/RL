@@ -85,8 +85,9 @@ case "${workload_mode}" in
     rollout_batch_invariant=false
     ;;
   controlled)
-    if [[ "${run_mode}" != performance || "${observability_mode}" != clean ]]; then
-      echo "SEARCH_R1_WORKLOAD_MODE=controlled requires a clean performance run." >&2
+    if [[ "${run_mode}" != performance ]] \
+      || [[ "${observability_mode}" != clean && "${observability_mode}" != profile ]]; then
+      echo "SEARCH_R1_WORKLOAD_MODE=controlled requires a clean or profile performance run." >&2
       exit 1
     fi
     optimizer_lr=0.0
