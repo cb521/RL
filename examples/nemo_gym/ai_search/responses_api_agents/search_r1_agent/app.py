@@ -4,6 +4,7 @@
 """NeMo Gym agent that reproduces Search-R1's text-action rollout loop."""
 
 import json
+import os
 import re
 from typing import Any, Literal
 
@@ -34,6 +35,7 @@ from resources_servers.ai_search.observability import trace_span
 
 
 _ACTION_PATTERN = re.compile(r"<(search|answer)>(.*?)</\1>", flags=re.DOTALL)
+_WORKLOAD_MODES = {"training", "controlled"}
 INVALID_ACTION_OBSERVATION = (
     "\nMy previous action is invalid. If I want to search, I should put the "
     "query between <search> and </search>. If I want to give the final answer, "
@@ -53,6 +55,16 @@ def _request_trace_id(request: Request) -> str | None:
         if isinstance(value, (str, int)):
             return str(value)
     return None
+
+
+def _workload_mode() -> str:
+    value = os.environ.get("SEARCH_R1_WORKLOAD_MODE", "training")
+    if value not in _WORKLOAD_MODES:
+        raise ValueError(
+            "SEARCH_R1_WORKLOAD_MODE must be training or controlled, "
+            f"not {value!r}"
+        )
+    return value
 
 
 class SearchR1AgentConfig(BaseResponsesAPIAgentConfig):
@@ -172,7 +184,13 @@ class SearchR1Agent(SimpleResponsesAPIAgent):
         new_outputs: list[Any],
         cookies: Any,
     ) -> tuple[NeMoGymResponse, Any]:
-        model_body = body.model_copy(update={"input": body.input + new_outputs})
+        model_body_update: dict[str, Any] = {"input": body.input + new_outputs}
+        if _workload_mode() == "controlled":
+            # This changes only model-server sampling. The policy worker keeps
+            # temperature 1.0 for its normal dense log-probability computation.
+            model_body_update["temperature"] = 0.0
+            model_body_update["top_p"] = 1.0
+        model_body = body.model_copy(update=model_body_update)
         raw_response = await self.server_client.post(
             server_name=self.config.model_server.name,
             url_path=self.url_path_for_request("/v1/responses", request),
@@ -241,7 +259,13 @@ class SearchR1Agent(SimpleResponsesAPIAgent):
             new_outputs.extend(last_response.output)
             usage = _merge_usage(usage, last_response.usage)
 
-            if last_response.incomplete_details:
+            incomplete_reason = getattr(
+                last_response.incomplete_details, "reason", None
+            )
+            if (
+                last_response.incomplete_details
+                and incomplete_reason != "max_output_tokens"
+            ):
                 ended = True
                 break
 

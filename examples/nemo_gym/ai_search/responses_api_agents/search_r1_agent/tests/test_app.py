@@ -31,8 +31,13 @@ def _http_response(payload: dict) -> MagicMock:
     return response
 
 
-def _model_response(text: str, response_id: str) -> dict:
-    return {
+def _model_response(
+    text: str,
+    response_id: str,
+    *,
+    incomplete_reason: str | None = None,
+) -> dict:
+    response = {
         "id": response_id,
         "created_at": 0.0,
         "model": "policy",
@@ -50,6 +55,9 @@ def _model_response(text: str, response_id: str) -> dict:
         "tool_choice": "auto",
         "tools": [],
     }
+    if incomplete_reason is not None:
+        response["incomplete_details"] = {"reason": incomplete_reason}
+    return response
 
 
 def _agent(max_turns: int = 4) -> SearchR1Agent:
@@ -190,6 +198,38 @@ async def test_search_round_uses_fixed_top_three_then_stops_on_answer() -> None:
 
 
 @pytest.mark.asyncio
+async def test_controlled_work_makes_only_model_requests_greedy(monkeypatch) -> None:
+    monkeypatch.setenv("SEARCH_R1_WORKLOAD_MODE", "controlled")
+    server = _agent()
+    server.server_client.post = AsyncMock(
+        return_value=_http_response(_model_response("<answer>done</answer>", "1"))
+    )
+
+    await server.responses(
+        _request(),
+        Response(),
+        NeMoGymResponseCreateParamsNonStreaming(input="question", temperature=0.8),
+    )
+
+    model_body = server.server_client.post.call_args.kwargs["json"]
+    assert model_body.temperature == 0.0
+    assert model_body.top_p == 1.0
+
+
+@pytest.mark.asyncio
+async def test_unknown_workload_mode_is_rejected(monkeypatch) -> None:
+    monkeypatch.setenv("SEARCH_R1_WORKLOAD_MODE", "unknown")
+    server = _agent()
+
+    with pytest.raises(ValueError, match="must be training or controlled"):
+        await server.responses(
+            _request(),
+            Response(),
+            NeMoGymResponseCreateParamsNonStreaming(input="question"),
+        )
+
+
+@pytest.mark.asyncio
 async def test_four_executable_turns_are_followed_by_one_terminal_call() -> None:
     server = _agent(max_turns=4)
     responses = []
@@ -238,3 +278,52 @@ async def test_invalid_action_reuses_search_r1_feedback() -> None:
         server.server_client.post.call_args_list[1].kwargs["json"].input
     )
     assert second_model_input[-1].content == INVALID_ACTION_OBSERVATION
+
+
+@pytest.mark.asyncio
+async def test_max_output_tokens_retries_as_invalid_search_r1_action() -> None:
+    server = _agent()
+    server.server_client.post = AsyncMock(
+        side_effect=[
+            _http_response(
+                _model_response(
+                    "not tagged",
+                    "1",
+                    incomplete_reason="max_output_tokens",
+                )
+            ),
+            _http_response(_model_response("<answer>done</answer>", "2")),
+        ]
+    )
+
+    await server.responses(
+        _request(),
+        Response(),
+        NeMoGymResponseCreateParamsNonStreaming(input="question"),
+    )
+
+    calls = server.server_client.post.call_args_list
+    assert len(calls) == 2
+    assert calls[1].kwargs["json"].input[-1].content == INVALID_ACTION_OBSERVATION
+
+
+@pytest.mark.asyncio
+async def test_other_incomplete_reason_still_ends_trajectory() -> None:
+    server = _agent()
+    server.server_client.post = AsyncMock(
+        return_value=_http_response(
+            _model_response(
+                "filtered",
+                "1",
+                incomplete_reason="content_filter",
+            )
+        )
+    )
+
+    await server.responses(
+        _request(),
+        Response(),
+        NeMoGymResponseCreateParamsNonStreaming(input="question"),
+    )
+
+    assert server.server_client.post.await_count == 1

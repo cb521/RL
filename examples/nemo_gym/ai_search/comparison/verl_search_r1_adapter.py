@@ -12,6 +12,7 @@ import time
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
+from numbers import Integral
 from types import SimpleNamespace
 from typing import Any
 
@@ -24,6 +25,8 @@ MAX_OBSERVATION_TOKENS = 500
 MAX_START_TOKENS = 2048
 MAX_RESPONSE_TOKENS = 4096
 TOP_K = 3
+_CONTROLLED_SEED_SESSION_STRIDE = 1024
+_WORKLOAD_MODES = {"training", "controlled"}
 _ACTION_PATTERN = re.compile(r"<(search|answer)>(.*?)</\1>", re.DOTALL)
 _INVALID_OBSERVATION = (
     "\nMy previous action is invalid. "
@@ -82,6 +85,29 @@ def adapter_contract() -> dict[str, Any]:
     }
 
 
+def _workload_mode() -> str:
+    value = os.environ.get("SEARCH_R1_WORKLOAD_MODE", "training")
+    if value not in _WORKLOAD_MODES:
+        raise ValueError(
+            "SEARCH_R1_WORKLOAD_MODE must be training or controlled, "
+            f"not {value!r}"
+        )
+    return value
+
+
+def _concatenate_message_content(messages: list[Any]) -> str:
+    """Render the official Search-R1 prompt without chat-role wrappers."""
+    content: list[str] = []
+    for message in messages:
+        if not isinstance(message, Mapping):
+            raise TypeError("raw_prompt entries must be mappings")
+        text = message.get("content")
+        if not isinstance(text, str):
+            raise TypeError("raw_prompt message content must be text")
+        content.append(text)
+    return "".join(content)
+
+
 def parse_action(response: str) -> tuple[str | None, str]:
     """Return the first executable Search-R1 action in a model response."""
     match = _ACTION_PATTERN.search(response)
@@ -122,6 +148,48 @@ def _flat_token_ids(value: Any, field_name: str) -> list[int]:
     return value
 
 
+def _nonnegative_integer_scalar(value: Any, field_name: str) -> int:
+    """Normalize Python, NumPy, or Torch scalar rollout metadata."""
+    if hasattr(value, "item"):
+        value = value.item()
+    if isinstance(value, bool) or not isinstance(value, Integral):
+        raise ValueError(f"{field_name} must be a non-negative integer scalar")
+    result = int(value)
+    if result < 0:
+        raise ValueError(f"{field_name} must be a non-negative integer scalar")
+    return result
+
+
+def _controlled_request_identity(
+    priority: Any, metadata: Mapping[str, Any]
+) -> tuple[str, int]:
+    """Build one stable identity and seed offset per controlled trajectory."""
+    if "index" not in metadata or "session_id" not in metadata:
+        normalized_priority = _nonnegative_integer_scalar(priority, "priority")
+        return f"priority-{normalized_priority}", normalized_priority
+
+    sample_index = _nonnegative_integer_scalar(metadata["index"], "index")
+    session_id = _nonnegative_integer_scalar(
+        metadata["session_id"], "session_id"
+    )
+    if session_id >= _CONTROLLED_SEED_SESSION_STRIDE:
+        raise ValueError(
+            "session_id must be below "
+            f"{_CONTROLLED_SEED_SESSION_STRIDE} in controlled work"
+        )
+    step_fragment = ""
+    if metadata.get("global_steps") is not None:
+        global_steps = _nonnegative_integer_scalar(
+            metadata["global_steps"], "global_steps"
+        )
+        step_fragment = f"step-{global_steps}-"
+    identity = f"{step_fragment}sample-{sample_index}-rollout-{session_id}"
+    seed_offset = (
+        sample_index * _CONTROLLED_SEED_SESSION_STRIDE + session_id
+    )
+    return identity, seed_offset
+
+
 async def _encode(agent: Any, text: str) -> list[int]:
     loop = getattr(agent, "loop", asyncio.get_running_loop())
 
@@ -153,6 +221,13 @@ def _sampling_params(agent: Any, source: Mapping[str, Any]) -> dict[str, Any]:
     params["stop"] = list(
         dict.fromkeys([*existing_stop, "</search>", "</answer>"])
     )
+    if _workload_mode() == "controlled":
+        # Keep the trainer's temperature at 1.0 for ordinary log-probability
+        # math, but make model requests greedy so both framework schedulers
+        # execute the same model-selected Search-R1 actions.
+        params["temperature"] = 0.0
+        params["top_p"] = 1.0
+        params["top_k"] = -1
 
     backend = str(getattr(agent.rollout_config, "name", "")).lower()
     if backend == "vllm":
@@ -218,7 +293,11 @@ async def _generate_turn(
         trace_id=request_id,
         component="current_verl",
         operation="model_generation",
-        attributes={"turn": turn, "max_new_tokens": MAX_ACTION_TOKENS},
+        attributes={
+            "turn": turn,
+            "input_tokens": min(len(context_ids), MAX_RESPONSE_TOKENS),
+            "max_new_tokens": MAX_ACTION_TOKENS,
+        },
     ) as span:
         output = await agent.server_manager.generate(
             request_id=request_id,
@@ -323,17 +402,37 @@ async def run_protocol(
     messages = kwargs.get("raw_prompt")
     if not isinstance(messages, (list, tuple)):
         raise TypeError("raw_prompt must be a list of chat messages")
-    prompt_ids = _flat_token_ids(
-        await agent.apply_chat_template(list(messages)),
-        "chat-template prompt_ids",
-    )[-MAX_START_TOKENS:]
+    message_list = list(messages)
+    if _workload_mode() == "controlled":
+        prompt_ids = (
+            await _encode(agent, _concatenate_message_content(message_list))
+        )[-MAX_START_TOKENS:]
+    else:
+        prompt_ids = _flat_token_ids(
+            await agent.apply_chat_template(message_list),
+            "chat-template prompt_ids",
+        )[-MAX_START_TOKENS:]
     context_ids = list(prompt_ids)
     response_ids: list[int] = []
     response_mask: list[int] = []
     response_logprobs: list[float] = []
     params = _sampling_params(agent, sampling_params)
     full_determinism = bool(getattr(agent.rollout_config, "full_determinism", False))
-    request_id = f"det-{int(priority)}" if full_determinism else uuid.uuid4().hex
+    controlled_work = _workload_mode() == "controlled"
+    if controlled_work:
+        # Greedy decoding should not consume RNG state, but a stable explicit
+        # seed also protects this comparison workload from backend defaults.
+        # TransferQueue does not attach a unique priority, so identify a
+        # trajectory by dataset row and rollout session instead.
+        identity, seed_offset = _controlled_request_identity(priority, kwargs)
+        request_id = f"det-{identity}"
+        params["seed"] = _nonnegative_integer_scalar(
+            getattr(agent.rollout_config, "seed", 0), "rollout seed"
+        ) + seed_offset
+    elif full_determinism:
+        request_id = f"det-{_nonnegative_integer_scalar(priority, 'priority')}"
+    else:
+        request_id = uuid.uuid4().hex
 
     generation_seconds = 0.0
     retrieval_seconds = 0.0

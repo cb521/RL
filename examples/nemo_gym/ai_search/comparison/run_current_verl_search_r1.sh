@@ -17,6 +17,10 @@ observability_mode="${SEARCH_R1_OBSERVABILITY_MODE:-clean}"
 seed="${SEARCH_R1_SEED:-42}"
 num_gpus="${SEARCH_R1_NUM_GPUS:-8}"
 allow_nonformal_preflight="${SEARCH_R1_ALLOW_NONFORMAL_PREFLIGHT:-0}"
+workload_mode="${SEARCH_R1_WORKLOAD_MODE:-training}"
+fast_iteration="${SEARCH_R1_FAST_ITERATION:-0}"
+controlled_data_manifest="${SEARCH_R1_CONTROLLED_DATA_MANIFEST:-}"
+filter_overlong_prompts=true
 lr_schedule_horizon_outer_steps=500
 lr_warmup_outer_steps=142
 
@@ -26,6 +30,9 @@ expected_verl_patch_sha256=3a11219896823a85e7f2527351b9071b118e87564b3a359f2b4c2
 expected_model_revision=d149729398750b98c0af14eb82c78cfe92750796
 expected_train_sha256=64325c44a1ac79c53fc70ad36551e34b4d2ac0fa79cf0d3cca1c4d244bdeaa39
 expected_eval_sha256=7c7d10d003dce8b0c6c2c0c4177974d0767cd2a380123faf6ee51473bc8e2461
+expected_controlled_train_sha256=213253af32ebad44378a47329e9f99a26dbda81d3175ac6a2c11d0f001ef3b20
+expected_controlled_manifest_sha256=09b4fa8a7127873c9083ff7dfa736ff087ad2c0d6b570dd6349d7bbfe6db1003
+controlled_semantic_rows_sha256=disabled
 
 case "${run_mode}" in
   smoke)
@@ -46,6 +53,9 @@ case "${run_mode}" in
   performance)
     prompts_per_step=8
     total_steps=4
+    if [[ "${fast_iteration}" == "1" ]]; then
+      total_steps=2
+    fi
     ppo_mini_batch_size=8
     ppo_micro_batch_size_per_gpu=5
     log_prob_micro_batch_size_per_gpu=1
@@ -69,6 +79,76 @@ case "${run_mode}" in
     ;;
   *)
     echo "SEARCH_R1_RUN_MODE must be smoke, performance, or campaign, not ${run_mode}." >&2
+    exit 1
+    ;;
+esac
+
+case "${fast_iteration}" in
+  0)
+    iteration_mode=full
+    case "${run_mode}" in
+      smoke)
+        warmup_steps=0
+        measured_steps=1
+        ;;
+      performance)
+        warmup_steps=1
+        measured_steps=2,3,4
+        ;;
+      campaign)
+        warmup_steps=0
+        measured_steps=1-500
+        ;;
+    esac
+    ;;
+  1)
+    if [[ "${run_mode}" != performance ]]; then
+      echo "SEARCH_R1_FAST_ITERATION=1 is only valid for performance runs." >&2
+      exit 1
+    fi
+    iteration_mode=fast-screening
+    warmup_steps=1
+    measured_steps=2
+    ;;
+  *)
+    echo "SEARCH_R1_FAST_ITERATION must be 0 or 1, not ${fast_iteration}." >&2
+    exit 1
+    ;;
+esac
+
+case "${workload_mode}" in
+  training)
+    optimizer_lr=1e-6
+    rollout_request_temperature=1.0
+    prompt_encoding=qwen-chat-template
+    weights_frozen=false
+    rollout_batch_invariant=false
+    deterministic_request_identity=false
+    ;;
+  controlled)
+    if [[ "${run_mode}" != performance || "${observability_mode}" != clean ]]; then
+      echo "SEARCH_R1_WORKLOAD_MODE=controlled requires a clean performance run." >&2
+      exit 1
+    fi
+    optimizer_lr=0.0
+    rollout_request_temperature=0.0
+    prompt_encoding=search-r1-content-concat
+    weights_frozen=true
+    rollout_batch_invariant=true
+    deterministic_request_identity=true
+    # Controlled performance runs consume the fixed 16-row, two-step fixture.
+    # Keep truncation=error as the safety gate, but avoid scanning the full
+    # training corpus before every one-step profiling iteration.
+    filter_overlong_prompts=false
+    expected_train_sha256="${expected_controlled_train_sha256}"
+    controlled_semantic_rows_sha256=281e6efdf2a9a3d083010f68d82e20d6bd8469976ee1fffdcf6a0616e158b75d
+    if [[ -z "${controlled_data_manifest}" ]]; then
+      echo "SEARCH_R1_CONTROLLED_DATA_MANIFEST is required for controlled work." >&2
+      exit 1
+    fi
+    ;;
+  *)
+    echo "SEARCH_R1_WORKLOAD_MODE must be training or controlled, not ${workload_mode}." >&2
     exit 1
     ;;
 esac
@@ -100,6 +180,9 @@ case "${observability_mode}" in
     exit 1
     ;;
 esac
+if [[ "${workload_mode}" == controlled ]]; then
+  trace_sample_rate=1.0
+fi
 if [[ "${observability_mode}" == profile && "${run_mode}" != performance ]]; then
   echo "SEARCH_R1_OBSERVABILITY_MODE=profile requires SEARCH_R1_RUN_MODE=performance." >&2
   exit 1
@@ -149,6 +232,11 @@ printf '%s  %s\n' \
   "${comparison_dir}/adapters/current-verl-comparison.patch" | sha256sum --check --status
 printf '%s  %s\n' "${expected_train_sha256}" "${train_file}" | sha256sum --check --status
 printf '%s  %s\n' "${expected_eval_sha256}" "${eval_file}" | sha256sum --check --status
+if [[ "${workload_mode}" == controlled ]]; then
+  printf '%s  %s\n' \
+    "${expected_controlled_manifest_sha256}" \
+    "${controlled_data_manifest}" | sha256sum --check --status
+fi
 if [[ "${retriever_url}" != http://*/retrieve && "${retriever_url}" != https://*/retrieve ]]; then
   echo "SEARCH_R1_RETRIEVER_URL must be an HTTP(S) /retrieve endpoint." >&2
   exit 1
@@ -235,10 +323,29 @@ if [[ "${observability_mode}" == profile ]]; then
 fi
 export TOKENIZERS_PARALLELISM=false
 export PYTHONUNBUFFERED=1
+export SEARCH_R1_WORKLOAD_MODE="${workload_mode}"
+if [[ "${workload_mode}" == controlled ]]; then
+  # Keep normal training on the fastest kernels.  The controlled comparison
+  # enables only vLLM's batch-invariant generation path, not veRL's broader
+  # full-determinism mode (which intentionally changes training kernels).
+  export VLLM_BATCH_INVARIANT=1
+else
+  unset VLLM_BATCH_INVARIANT
+fi
 
 {
   printf 'framework=current-verl\n'
   printf 'run_mode=%s\nobservability_mode=%s\n' "${run_mode}" "${observability_mode}"
+  printf 'iteration_mode=%s\nwarmup_steps=%s\nmeasured_steps=%s\n' \
+    "${iteration_mode}" "${warmup_steps}" "${measured_steps}"
+  printf 'workload_mode=%s\nprompt_encoding=%s\n' \
+    "${workload_mode}" "${prompt_encoding}"
+  printf 'rollout_request_temperature=%s\ntraining_logprob_temperature=1.0\n' \
+    "${rollout_request_temperature}"
+  printf 'weights_frozen_by_zero_lr=%s\n' "${weights_frozen}"
+  printf 'rollout_batch_invariant=%s\ndeterministic_request_identity=%s\n' \
+    "${rollout_batch_invariant}" "${deterministic_request_identity}"
+  printf 'filter_overlong_prompts=%s\n' "${filter_overlong_prompts}"
   printf 'source_upstream_base=%s\nsource_patched_head=%s\n' \
     "${expected_verl_upstream_base}" "${actual_verl_head}"
   printf 'reference_patch_head=%s\nsource_patch_sha256=%s\n' \
@@ -247,6 +354,9 @@ export PYTHONUNBUFFERED=1
   printf 'model_revision=%s\n' "${expected_model_revision}"
   printf 'train_sha256=%s\n' "${expected_train_sha256}"
   printf 'eval_sha256=%s\n' "${expected_eval_sha256}"
+  printf 'controlled_data_manifest_sha256=%s\n' \
+    "$([[ "${workload_mode}" == controlled ]] && echo "${expected_controlled_manifest_sha256}" || echo disabled)"
+  printf 'controlled_semantic_rows_sha256=%s\n' "${controlled_semantic_rows_sha256}"
   printf 'retriever_url=%s\n' "${retriever_url}"
   printf 'seed=%s\n' "${seed}"
   printf 'training_gpus=%s\n' "${num_gpus}"
@@ -260,7 +370,8 @@ export PYTHONUNBUFFERED=1
   printf 'optimizer_updates_per_outer_step=%s\n' \
     "$((prompts_per_step / ppo_mini_batch_size))"
   printf 'total_steps=%s\n' "${total_steps}"
-  printf 'optimizer=AdamW\noptimizer_lr=1e-6\noptimizer_weight_decay=0.01\n'
+  printf 'optimizer=AdamW\noptimizer_lr=%s\noptimizer_weight_decay=0.01\n' \
+    "${optimizer_lr}"
   printf 'optimizer_betas=0.9,0.999\noptimizer_epsilon=1e-8\n'
   printf 'measurement_work_counters=scalar-transfer-queue-tags\n'
   printf 'timed_rollout_text_dump=disabled\n'
@@ -289,13 +400,13 @@ command=(
   "data.train_batch_size=${prompts_per_step}"
   data.max_prompt_length=2048
   data.max_response_length=4096
-  data.filter_overlong_prompts=true
+  "data.filter_overlong_prompts=${filter_overlong_prompts}"
   data.truncation=error
   data.shuffle=false
   "actor_rollout_ref.model.path=${model_path}"
   actor_rollout_ref.model.use_remove_padding=true
   actor_rollout_ref.model.enable_gradient_checkpointing=true
-  actor_rollout_ref.actor.optim.lr=1e-6
+  "actor_rollout_ref.actor.optim.lr=${optimizer_lr}"
   actor_rollout_ref.actor.optim.lr_warmup_steps_ratio=0.0
   "actor_rollout_ref.actor.optim.lr_warmup_steps=${lr_warmup_outer_steps}"
   actor_rollout_ref.actor.optim.weight_decay=0.01
