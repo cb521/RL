@@ -58,7 +58,13 @@ policy:
     offload_model_during_refit: false
     tensor_parallel_size: 1
   dynamic_batching:
-    enabled: false
+    # Group by real token count instead of repeatedly computing the batch-wide
+    # 4,096-token padding tail. Cap actor microbatches below the inherited
+    # 20,480-token value, which is unsafe without activation checkpointing.
+    enabled: true
+    train_mb_tokens: 8192
+    logprob_mb_tokens: 4096
+    sequence_length_round: 64
   sequence_packing:
     enabled: false
   optimizer:
